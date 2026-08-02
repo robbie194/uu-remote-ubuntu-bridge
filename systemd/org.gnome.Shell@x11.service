@@ -1,0 +1,28 @@
+[Unit]
+Description=GNOME Shell on X11 with physical-session recovery
+# Keep a recoverable Shell crash from starting gnome-session-failed.target,
+# which tears down the complete physical session after Shell has restarted.
+OnFailure=org.gnome.Shell-disable-extensions.service
+OnFailureJobMode=replace
+CollectMode=inactive-or-failed
+RefuseManualStart=on
+RefuseManualStop=on
+
+After=gnome-session-manager.target
+Requisite=gnome-session-initialized.target
+PartOf=gnome-session-initialized.target
+Before=gnome-session-initialized.target
+ConditionEnvironment=XDG_SESSION_TYPE=%I
+
+StartLimitIntervalSec=120s
+StartLimitBurst=10
+
+[Service]
+Slice=session.slice
+Type=notify
+ExecStart=/usr/bin/gnome-shell
+SuccessExitStatus=1
+Restart=always
+RestartSec=3s
+TimeoutStopSec=5
+OOMScoreAdjust=-1000

@@ -21,6 +21,9 @@ systemctl_user=(
     "DBUS_SESSION_BUS_ADDRESS=unix:path=${XDG_RUNTIME_DIR:-/run/user/$UID}/bus"
     /usr/bin/systemctl --user
 )
+shared_desktop_config_dir="$HOME/.config/uu-remote-bridge"
+shared_desktop_state="$shared_desktop_config_dir/shared-desktop-state.json"
+shared_desktop_helper="$HOME/.local/libexec/uu-configure-shared-desktop"
 
 while (($#)); do
     case "$1" in
@@ -84,6 +87,17 @@ if [[ -f "$devcon_backup" && -e "$devcon" ]] &&
     exit 1
 fi
 
+if [[ -f "$shared_desktop_state" ]]; then
+    if [[ ! -x "$shared_desktop_helper" ]]; then
+        printf 'Cannot restore the shared-desktop profile: helper is missing.\n' >&2
+        exit 1
+    fi
+    "$shared_desktop_helper" preflight-disable \
+        --bus "unix:path=${XDG_RUNTIME_DIR:-/run/user/$UID}/bus" \
+        --display auto --xauthority auto \
+        --config-dir "$shared_desktop_config_dir"
+fi
+
 if [[ "$dry_run" == true ]]; then
     printf 'PASS  audited server, health-monitor, and driver-helper backups can be restored.\n'
     printf 'INFO  purge=%s; no service, file, credential, or RDP setting changed.\n' \
@@ -91,6 +105,12 @@ if [[ "$dry_run" == true ]]; then
     exit 0
 fi
 
+if [[ -f "$shared_desktop_state" ]]; then
+    "$shared_desktop_helper" disable \
+        --bus "unix:path=${XDG_RUNTIME_DIR:-/run/user/$UID}/bus" \
+        --display auto --xauthority auto \
+        --config-dir "$shared_desktop_config_dir"
+fi
 "${systemctl_user[@]}" disable --now uu-remote-bridge.service \
     >/dev/null 2>&1 || true
 "${systemctl_user[@]}" disable --now uu-remote-console.service \
@@ -162,12 +182,14 @@ rm -f \
     "$HOME/.local/bin/uu-agent" \
     "$HOME/.local/libexec/uu-clean-wine-device-registry" \
     "$HOME/.local/libexec/uu-connection-status" \
+    "$HOME/.local/libexec/uu-configure-shared-desktop" \
     "$HOME/.local/libexec/uu-inspect-wine-device-registry.py" \
     "$HOME/.local/libexec/uu-remote-stop-wine-prefix" \
     "$HOME/.local/bin/uu-keyring-unlock" \
     "$HOME/.config/systemd/user/uu-keyring-unlock.service" \
     "$HOME/.config/systemd/user/uu-remote-bridge.service" \
     "$HOME/.config/systemd/user/uu-remote-console.service" \
+    "$HOME/.local/share/uu-remote-bridge/systemd/org.gnome.Shell@x11.service" \
     "$HOME/.local/share/applications/uu-remote.desktop" \
     "$HOME/Desktop/UU Remote.desktop"
 rm -rf \

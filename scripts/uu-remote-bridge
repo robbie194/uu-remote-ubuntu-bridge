@@ -13,6 +13,7 @@ keyboard_route="${UURB_KEYBOARD_ROUTE:-rdp}"
 network_interface="${UURB_NETWORK_INTERFACE:-all}"
 cursor_guard_setting="${UURB_CURSOR_GUARD:-off}"
 cursor_size_setting="${UURB_CURSOR_SIZE:-auto}"
+x11_shared_desktop_guard="${UURB_X11_SHARED_DESKTOP_GUARD:-off}"
 wine_prefix="${UURB_WINEPREFIX:-$HOME/.local/share/wineprefixes/uu-remote}"
 manager_display="${DISPLAY:-}"
 manager_wayland="${WAYLAND_DISPLAY:-}"
@@ -40,6 +41,8 @@ if [[ "$bridge_display" != auto &&
       ! "$network_interface" =~ ^[a-zA-Z0-9_.:-]{1,15}$ ]] ||
    [[ "$cursor_guard_setting" != off &&
       "$cursor_guard_setting" != on ]] ||
+   [[ "$x11_shared_desktop_guard" != off &&
+      "$x11_shared_desktop_guard" != on ]] ||
    [[ "$cursor_size_setting" != auto &&
       ! "$cursor_size_setting" =~ ^[0-9]{1,3}$ ]] ||
    [[ "$wine_prefix" != /* ]]; then
@@ -121,6 +124,8 @@ x11_input_ready_file="$runtime_dir/x11-input.port"
 private_display_file="$runtime_dir/private-display"
 console_focus_file="$runtime_dir/console-focus"
 wine_stop_bin="$HOME/.local/libexec/uu-remote-stop-wine-prefix"
+shared_desktop_bin="$HOME/.local/libexec/uu-configure-shared-desktop"
+shared_desktop_config_dir="$HOME/.config/uu-remote-bridge"
 
 if [[ ! -x "$libei_dir/libei.so.1.2.1" ||
       ! -L "$libei_dir/libei.so.1" ]]; then
@@ -397,6 +402,8 @@ discover_desktop_session() {
     local candidate_display
     local candidate_session_type
     local candidate_session_id
+    local candidate_remote
+    local candidate_seat
     local candidate_state
     local candidate_wayland
     local candidate_xauthority
@@ -440,6 +447,18 @@ discover_desktop_session() {
             )"
             [[ "$candidate_state" == active || \
                "$candidate_state" == online ]] || continue
+            candidate_seat="$(
+                /usr/bin/loginctl show-session "$candidate_session_id" \
+                    --property=Seat --value 2>/dev/null || true
+            )"
+            candidate_remote="$(
+                /usr/bin/loginctl show-session "$candidate_session_id" \
+                    --property=Remote --value 2>/dev/null || true
+            )"
+            [[ "$candidate_seat" == seat0 && \
+               "$candidate_remote" == no ]] || continue
+        elif [[ "$candidate_bus" != "$manager_bus" ]]; then
+            continue
         fi
 
         if [[ -z "$fallback_bus" ]]; then
@@ -488,6 +507,39 @@ start_idle_inhibitor() {
     log 'GNOME idle blanking is inhibited while UU Remote is active.'
 }
 
+check_x11_shared_desktop() {
+    local report_success="${1:-yes}"
+    local -a command
+    local output
+
+    [[ "$x11_shared_desktop_guard" == on ]] || return 0
+    if [[ "$desktop_session_type" != x11 ]]; then
+        log 'The X11 shared-desktop guard is enabled but the selected desktop is not X11; no RandR guard is needed.'
+        return 0
+    fi
+    if [[ ! -x "$shared_desktop_bin" ]]; then
+        log 'The X11 shared-desktop guard helper is missing; reinstall the bridge.'
+        return 1
+    fi
+    command=(
+        /usr/bin/timeout --kill-after=2s 5s
+        "$shared_desktop_bin" check
+        --bus "$desktop_bus"
+        --display "$desktop_display"
+        --xauthority "${desktop_xauthority:-auto}"
+        --config-dir "$shared_desktop_config_dir"
+    )
+    if ! output="$("${command[@]}" 2>&1)"; then
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && log "X11 capture guard: $line"
+        done <<<"$output"
+        return 1
+    fi
+    if [[ "$report_success" != quiet ]]; then
+        log 'All active physical X11 RandR transforms are identity.'
+    fi
+}
+
 start_desktop_relay() {
     local -a desktop_environment
     local native_openssl_modules
@@ -497,6 +549,9 @@ start_desktop_relay() {
         until discover_desktop_session; do
             sleep 5
         done
+    fi
+    if ! check_x11_shared_desktop; then
+        return 1
     fi
     if ! start_idle_inhibitor; then
         return 1
@@ -935,6 +990,8 @@ supervise_server() {
     local health_checks=0
     local missing_checks=0
     local network_route_checks=0
+    local shared_desktop_checks=0
+    local shared_desktop_failures=0
 
     while true; do
         candidate="$(pgrep -o -u "$UID" -f 'GameViewerServer\.exe' || true)"
@@ -998,6 +1055,22 @@ supervise_server() {
                       "$active_network_interface" ]]; then
                     log "Default network interface changed from $active_network_interface to $current_default_interface; restarting UU on the preferred route."
                     return 1
+                fi
+            fi
+        fi
+        if [[ "$x11_shared_desktop_guard" == on && \
+              "$desktop_session_type" == x11 ]]; then
+            shared_desktop_checks=$((shared_desktop_checks + 1))
+            if ((shared_desktop_checks >= 40)); then
+                shared_desktop_checks=0
+                if ! check_x11_shared_desktop quiet; then
+                    shared_desktop_failures=$((shared_desktop_failures + 1))
+                    if ((shared_desktop_failures >= 3)); then
+                        log 'The physical X11 desktop failed three consecutive identity checks; stopping the relay.'
+                        return 1
+                    fi
+                else
+                    shared_desktop_failures=0
                 fi
             fi
         fi

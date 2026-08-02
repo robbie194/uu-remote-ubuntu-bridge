@@ -67,6 +67,10 @@ saved_keyboard_route="$(saved_setting UURB_KEYBOARD_ROUTE)"
 keyboard_route="${UURB_KEYBOARD_ROUTE:-${saved_keyboard_route:-rdp}}"
 saved_cursor_guard="$(saved_setting UURB_CURSOR_GUARD)"
 cursor_guard_setting="${UURB_CURSOR_GUARD:-${saved_cursor_guard:-off}}"
+saved_x11_shared_desktop_guard="$(
+    saved_setting UURB_X11_SHARED_DESKTOP_GUARD
+)"
+x11_shared_desktop_guard="${UURB_X11_SHARED_DESKTOP_GUARD:-${saved_x11_shared_desktop_guard:-off}}"
 
 bridge_service_active() {
     if "${systemctl_user[@]}" is-active --quiet uu-remote-bridge.service; then
@@ -208,6 +212,44 @@ if bridge_service_active; then
     fi
 else
     fail 'no supported bridge service is active'
+fi
+
+if [[ "$x11_shared_desktop_guard" == on ]]; then
+    shared_desktop_helper="$HOME/.local/libexec/uu-configure-shared-desktop"
+    managed_shell_unit="$HOME/.local/share/uu-remote-bridge/systemd/org.gnome.Shell@x11.service"
+    installed_shell_unit="$HOME/.config/systemd/user/org.gnome.Shell@x11.service"
+    if [[ -x "$shared_desktop_helper" &&
+          -f "$managed_shell_unit" &&
+          -f "$installed_shell_unit" ]] &&
+       /usr/bin/cmp -s "$managed_shell_unit" "$installed_shell_unit"; then
+        pass 'X11 Shell recovery unit is installed from the managed source'
+    else
+        fail 'X11 shared-desktop guard files are missing or differ from the managed source'
+    fi
+    shell_on_failure="$(
+        "${systemctl_user[@]}" show org.gnome.Shell@x11.service \
+            --property=OnFailure --value 2>/dev/null || true
+    )"
+    if [[ "$shell_on_failure" == *org.gnome.Shell-disable-extensions.service* &&
+          "$shell_on_failure" != *gnome-session-failed.target* ]]; then
+        pass 'GNOME Shell failure recovery no longer logs out the X11 session'
+    else
+        fail 'GNOME Shell still includes the session-failed logout dependency'
+    fi
+    if shared_desktop_output="$(
+        /usr/bin/timeout --kill-after=2s 5s \
+            "$shared_desktop_helper" check \
+            --bus "unix:path=${XDG_RUNTIME_DIR:-/run/user/$UID}/bus" \
+            --display auto --xauthority auto \
+            --config-dir "$HOME/.config/uu-remote-bridge" 2>&1
+    )"; then
+        pass 'physical seat0 X11 desktop uses the managed identity profile'
+    else
+        printf '%s\n' "$shared_desktop_output" >&2
+        fail 'physical seat0 X11 desktop failed the shared-desktop guard'
+    fi
+else
+    printf 'INFO  X11 shared-desktop capture guard is disabled\n'
 fi
 
 service_started_at="$(bridge_service_property ExecMainStartTimestamp || true)"

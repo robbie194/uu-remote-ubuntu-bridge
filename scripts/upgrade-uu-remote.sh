@@ -256,6 +256,9 @@ refresh_updater_runtime() {
 
 backup_paths=(
     "$HOME/.config/uu-remote-bridge/environment"
+    "$HOME/.config/uu-remote-bridge/shared-desktop-state.json"
+    "$HOME/.config/systemd/user/org.gnome.Shell@x11.service"
+    "$HOME/.config/systemd/user/org.gnome.Shell@x11.service.d/90-uu-remote-recovery.conf"
     "$HOME/.config/systemd/user/uu-remote-bridge.service"
     "$HOME/.config/systemd/user/uu-remote-console.service"
     "$HOME/.config/systemd/user/uu-keyring-unlock.service"
@@ -268,7 +271,9 @@ backup_paths=(
     "$HOME/.local/share/applications/uu-remote.desktop"
     "$HOME/Desktop/UU Remote.desktop"
     "$HOME/.local/libexec/uu-connection-status"
+    "$HOME/.local/libexec/uu-configure-shared-desktop"
     "$HOME/.local/libexec/uu-remote-stop-wine-prefix"
+    "$HOME/.local/share/uu-remote-bridge/systemd/org.gnome.Shell@x11.service"
     "$wine_prefix/compat"
     "$wine_prefix/drive_c/Program Files/FreeRDP"
     "$wine_prefix/drive_c/Program Files/Netease/GameViewer/bin"

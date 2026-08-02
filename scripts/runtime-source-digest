@@ -14,6 +14,7 @@ runtime_files=(
     scripts/build-winpr.sh
     scripts/clean-wine-device-registry
     scripts/compare-pe-normalized.py
+    scripts/configure-shared-desktop
     scripts/configure-unattended.sh
     scripts/inspect-wine-device-registry.py
     scripts/runtime-settings.sh
@@ -38,6 +39,7 @@ runtime_files=(
     src/winpr_sspi_shim.c
     src/x11_input_protocol.h
     systemd/uu-keyring-unlock.service
+    systemd/org.gnome.Shell@x11.service
     systemd/uu-remote-bridge-unattended.conf
     systemd/uu-remote-bridge.service
     systemd/uu-remote-console.service

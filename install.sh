@@ -58,6 +58,12 @@ saved_cursor_guard="$(saved_setting UURB_CURSOR_GUARD)"
 saved_cursor_size="$(saved_setting UURB_CURSOR_SIZE)"
 saved_console_vnc_port="$(saved_setting UURB_CONSOLE_VNC_PORT)"
 saved_console_web_port="$(saved_setting UURB_CONSOLE_WEB_PORT)"
+saved_x11_shared_desktop_guard="$(
+    saved_setting UURB_X11_SHARED_DESKTOP_GUARD
+)"
+saved_desktop_text_scale="$(saved_setting UURB_DESKTOP_TEXT_SCALE)"
+saved_desktop_icon_size="$(saved_setting UURB_DESKTOP_ICON_SIZE)"
+saved_dock_icon_size="$(saved_setting UURB_DOCK_ICON_SIZE)"
 rdp_port="${UURB_RDP_PORT:-${saved_rdp_port:-3390}}"
 resolution="${UURB_RESOLUTION:-${saved_resolution:-1920x1080}}"
 bridge_display="${UURB_DISPLAY:-${saved_display:-auto}}"
@@ -71,6 +77,10 @@ cursor_guard="${UURB_CURSOR_GUARD:-${saved_cursor_guard:-off}}"
 cursor_size="${UURB_CURSOR_SIZE:-${saved_cursor_size:-auto}}"
 console_vnc_port="${UURB_CONSOLE_VNC_PORT:-${saved_console_vnc_port:-5920}}"
 console_web_port="${UURB_CONSOLE_WEB_PORT:-${saved_console_web_port:-6080}}"
+x11_shared_desktop_guard="${UURB_X11_SHARED_DESKTOP_GUARD:-${saved_x11_shared_desktop_guard:-off}}"
+desktop_text_scale="${UURB_DESKTOP_TEXT_SCALE:-${saved_desktop_text_scale:-1.5}}"
+desktop_icon_size="${UURB_DESKTOP_ICON_SIZE:-${saved_desktop_icon_size:-large}}"
+dock_icon_size="${UURB_DOCK_ICON_SIZE:-${saved_dock_icon_size:-57}}"
 uu_installer=''
 skip_packages=false
 skip_account_login=false
@@ -112,6 +122,17 @@ usage: ./install.sh [options]
                          use a fixed size from 24 through 128 pixels
   --console-vnc-port N   localhost VNC sidecar port (default: 5920)
   --console-web-port N   localhost noVNC app port (default: 6080)
+  --x11-shared-desktop-guard on|off
+                         guard an X11 physical desktop against fractional
+                         capture geometry and install Shell crash recovery
+                         (default: off)
+  --desktop-text-scale N text-only GNOME scale used with the X11 guard
+                         (default: 1.5; valid: 0.5 through 3.0)
+  --desktop-icon-size tiny|small|standard|large
+                         DING desktop icon size used with the X11 guard
+                         (default: large, 96 px on Ubuntu 24.04)
+  --dock-icon-size N     Ubuntu Dock icon size used with the X11 guard
+                         (default: 57; valid: 8 through 128)
   --skip-packages        do not install Ubuntu/Wine package dependencies
   --skip-account-login   do not open UU for first-time account sign-in
   --unattended           enable TPM-backed startup after an automatic login
@@ -181,6 +202,22 @@ while (($#)); do
             ;;
         --console-web-port)
             console_web_port="${2:?--console-web-port requires a port}"
+            shift 2
+            ;;
+        --x11-shared-desktop-guard)
+            x11_shared_desktop_guard="${2:?--x11-shared-desktop-guard requires on or off}"
+            shift 2
+            ;;
+        --desktop-text-scale)
+            desktop_text_scale="${2:?--desktop-text-scale requires a factor}"
+            shift 2
+            ;;
+        --desktop-icon-size)
+            desktop_icon_size="${2:?--desktop-icon-size requires a size}"
+            shift 2
+            ;;
+        --dock-icon-size)
+            dock_icon_size="${2:?--dock-icon-size requires a pixel size}"
             shift 2
             ;;
         --skip-packages)
@@ -329,6 +366,33 @@ if ((console_vnc_port < 1024 || console_vnc_port > 65535 ||
         >&2
     exit 2
 fi
+if [[ "$x11_shared_desktop_guard" != off &&
+      "$x11_shared_desktop_guard" != on ]]; then
+    printf 'The X11 shared-desktop guard must be off or on.\n' >&2
+    exit 2
+fi
+if [[ ! "$desktop_text_scale" =~ ^([0-9]+)([.][0-9]+)?$ ]] ||
+   ! /usr/bin/awk -v value="$desktop_text_scale" \
+        'BEGIN { exit !(value >= 0.5 && value <= 3.0) }'; then
+    printf 'The desktop text scale must be from 0.5 through 3.0.\n' >&2
+    exit 2
+fi
+if [[ "$desktop_icon_size" != tiny &&
+      "$desktop_icon_size" != small &&
+      "$desktop_icon_size" != standard &&
+      "$desktop_icon_size" != large ]]; then
+    printf 'The desktop icon size must be tiny, small, standard, or large.\n' >&2
+    exit 2
+fi
+if [[ ! "$dock_icon_size" =~ ^[0-9]{1,3}$ ]]; then
+    printf 'The Dock icon size must be an integer from 8 through 128.\n' >&2
+    exit 2
+fi
+dock_icon_size=$((10#$dock_icon_size))
+if ((dock_icon_size < 8 || dock_icon_size > 128)); then
+    printf 'The Dock icon size must be an integer from 8 through 128.\n' >&2
+    exit 2
+fi
 if [[ "$upgrade_existing" == true && -z "$uu_installer" ]]; then
     printf -- '--upgrade-existing requires --uu-installer with an audited file.\n' >&2
     exit 2
@@ -395,7 +459,7 @@ install_packages() {
         libxml2-utils libxtst6 meson novnc \
         ninja-build openbox openssl p7zip-full patch python3 python3-attr \
         python3-gi python3-jinja2 tar tigervnc-viewer websockify \
-        x11-utils x11vnc xauth \
+        x11-utils x11-xserver-utils x11vnc xauth \
         xdotool xvfb zstd
     install_winehq
 }
@@ -451,10 +515,11 @@ for command in curl meson ninja patch readelf sha256sum /usr/bin/systemctl \
     timeout \
     "$grdctl_bin" "$openssl_bin" "$python_bin" "$secret_tool_bin" \
     "$wine_bin" "$wineserver_bin" /usr/bin/Xvfb /usr/bin/gsettings \
-    /usr/bin/awk /usr/bin/gnome-session-inhibit /usr/bin/ip \
+    /usr/bin/awk /usr/bin/gnome-session-inhibit /usr/bin/ip /usr/bin/loginctl \
     /usr/bin/mcookie /usr/bin/openbox \
     /usr/bin/script /usr/bin/sort /usr/bin/ss /usr/bin/xauth \
     /usr/bin/vncviewer /usr/bin/websockify /usr/bin/x11vnc /usr/bin/xdotool \
+    /usr/bin/xrandr \
     /usr/libexec/gnome-remote-desktop-daemon; do
     if ! command -v "$command" >/dev/null 2>&1; then
         printf 'missing required command: %s\n' "$command" >&2
@@ -500,6 +565,21 @@ fi
 restore_bridge_after_failure() {
     local status=$?
 
+    if [[ -n "${environment_tmp:-}" ]]; then
+        rm -f "$environment_tmp"
+    fi
+    if ((status != 0)) && \
+       [[ "${environment_replaced:-false}" == true && \
+          "${shared_profile_committed:-false}" != true ]]; then
+        if [[ "${environment_backup_present:-false}" == true ]]; then
+            cp -p "$environment_backup" "$environment_file" || true
+        else
+            rm -f "$environment_file"
+        fi
+    fi
+    if [[ -n "${environment_backup:-}" ]]; then
+        rm -f "$environment_backup"
+    fi
     if ((status != 0)) && [[ "$bridge_was_active" == true ]]; then
         "${systemctl_user[@]}" start uu-remote-bridge.service \
             >/dev/null 2>&1 || true
@@ -670,8 +750,21 @@ fi
 
 install -d -m 0755 \
     "$HOME/.local/bin" "$HOME/.local/libexec" \
-    "$HOME/.config/systemd/user" "$HOME/.local/share/applications"
+    "$HOME/.config/systemd/user" "$HOME/.local/share/applications" \
+    "$HOME/.local/share/uu-remote-bridge/systemd"
 install -d -m 0700 "$config_dir"
+shared_desktop_helper="$HOME/.local/libexec/uu-configure-shared-desktop"
+shared_desktop_unit_source="$HOME/.local/share/uu-remote-bridge/systemd/org.gnome.Shell@x11.service"
+install -m 0755 "$repo_dir/scripts/configure-shared-desktop" \
+    "$shared_desktop_helper"
+install -m 0644 "$repo_dir/systemd/org.gnome.Shell@x11.service" \
+    "$shared_desktop_unit_source"
+shared_desktop_command=(
+    --bus "unix:path=$user_bus"
+    --display auto
+    --xauthority auto
+    --config-dir "$config_dir"
+)
 environment_tmp="$(mktemp "$config_dir/.environment.XXXXXX")"
 printf 'UURB_RDP_PORT=%s\n' "$rdp_port" >"$environment_tmp"
 printf 'UURB_RESOLUTION=%s\n' "$resolution" >>"$environment_tmp"
@@ -694,8 +787,15 @@ printf 'UURB_CONSOLE_VNC_PORT=%s\n' \
     "$console_vnc_port" >>"$environment_tmp"
 printf 'UURB_CONSOLE_WEB_PORT=%s\n' \
     "$console_web_port" >>"$environment_tmp"
+printf 'UURB_X11_SHARED_DESKTOP_GUARD=%s\n' \
+    "$x11_shared_desktop_guard" >>"$environment_tmp"
+printf 'UURB_DESKTOP_TEXT_SCALE=%s\n' \
+    "$desktop_text_scale" >>"$environment_tmp"
+printf 'UURB_DESKTOP_ICON_SIZE=%s\n' \
+    "$desktop_icon_size" >>"$environment_tmp"
+printf 'UURB_DOCK_ICON_SIZE=%s\n' \
+    "$dock_icon_size" >>"$environment_tmp"
 chmod 0600 "$environment_tmp"
-mv "$environment_tmp" "$environment_file"
 install -m 0755 "$repo_dir/scripts/uu-remote-bridge" \
     "$HOME/.local/bin/uu-remote-bridge"
 install -m 0755 "$repo_dir/scripts/uu-remote" "$HOME/.local/bin/uu-remote"
@@ -800,6 +900,30 @@ chmod 0600 "$relay_vnc_auth_temporary"
 mv -f "$relay_vnc_auth_temporary" "$relay_vnc_auth_file"
 unset relay_vnc_auth_quoted
 unset rdp_password
+
+environment_backup="$(mktemp "$config_dir/.environment-backup.XXXXXX")"
+environment_backup_present=false
+if [[ -f "$environment_file" ]]; then
+    cp -p "$environment_file" "$environment_backup"
+    environment_backup_present=true
+fi
+mv "$environment_tmp" "$environment_file"
+environment_tmp=''
+environment_replaced=true
+shared_profile_committed=false
+if [[ "$x11_shared_desktop_guard" == on ]]; then
+    "$shared_desktop_helper" enable \
+        "${shared_desktop_command[@]}" \
+        --text-scale "$desktop_text_scale" \
+        --desktop-icons "$desktop_icon_size" \
+        --dock-icon-size "$dock_icon_size" \
+        --unit-source "$shared_desktop_unit_source"
+elif [[ -f "$config_dir/shared-desktop-state.json" ]]; then
+    "$shared_desktop_helper" disable "${shared_desktop_command[@]}"
+fi
+shared_profile_committed=true
+rm -f "$environment_backup"
+environment_backup=''
 
 "${systemctl_user[@]}" daemon-reload
 "${systemctl_user[@]}" reenable uu-remote-bridge.service

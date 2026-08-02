@@ -1,0 +1,921 @@
+#!/usr/bin/env python3
+
+"""Configure the reversible GNOME X11 settings used by the shared relay."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import base64
+import binascii
+import copy
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+STATE_VERSION = 1
+STATE_NAME = "shared-desktop-state.json"
+SHELL_UNIT_NAME = "org.gnome.Shell@x11.service"
+DANGEROUS_MUTTER_FEATURES = {
+    "scale-monitor-framebuffer",
+    "x11-randr-fractional-scaling",
+}
+SETTING_SPECS = {
+    "mutter_features": ("org.gnome.mutter", "experimental-features"),
+    "text_scale": ("org.gnome.desktop.interface", "text-scaling-factor"),
+    "desktop_icons": ("org.gnome.shell.extensions.ding", "icon-size"),
+    "dock_icon_size": (
+        "org.gnome.shell.extensions.dash-to-dock",
+        "dash-max-icon-size",
+    ),
+}
+
+
+class ConfigurationError(RuntimeError):
+    pass
+
+
+def command_path(name: str) -> str:
+    value = shutil.which(name)
+    if not value:
+        raise ConfigurationError(f"missing required command: {name}")
+    return value
+
+
+def run_command(
+    arguments: list[str], environment: dict[str, str], check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        arguments,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise ConfigurationError(
+            f"command failed ({' '.join(arguments)}): {detail}"
+        )
+    return result
+
+
+def desktop_environment(bus: str, display: str, xauthority: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["DBUS_SESSION_BUS_ADDRESS"] = bus
+    environment["DISPLAY"] = display
+    if xauthority:
+        environment["XAUTHORITY"] = xauthority
+    else:
+        environment.pop("XAUTHORITY", None)
+    return environment
+
+
+def read_process_environment(pid: int) -> dict[str, str]:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except (OSError, ValueError):
+        return {}
+    values: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        if b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        values[key.decode(errors="replace")] = value.decode(errors="replace")
+    return values
+
+
+def systemd_shell_pid(bus: str) -> int | None:
+    environment = os.environ.copy()
+    environment["DBUS_SESSION_BUS_ADDRESS"] = bus
+    result = run_command(
+        [
+            command_path("systemctl"),
+            "--user",
+            "show",
+            SHELL_UNIT_NAME,
+            "--property=MainPID",
+            "--value",
+        ],
+        environment,
+        check=False,
+    )
+    value = result.stdout.strip()
+    if result.returncode == 0 and value.isdigit() and int(value) > 0:
+        return int(value)
+    return None
+
+
+def canonical_display(value: str) -> str:
+    match = re.fullmatch(r":(0|[1-9]\d*)(?:\.\d+)?", value)
+    if not match:
+        raise ConfigurationError(f"invalid X display reported by session: {value}")
+    return f":{match.group(1)}"
+
+
+def session_process_ids(scope: str, uid: int) -> list[int]:
+    cgroup_procs = (
+        Path("/sys/fs/cgroup/user.slice")
+        / f"user-{uid}.slice"
+        / scope
+        / "cgroup.procs"
+    )
+    try:
+        return [int(value) for value in cgroup_procs.read_text().split()]
+    except (OSError, ValueError):
+        processes: list[int] = []
+        marker = f"/{scope}"
+        for process in Path("/proc").iterdir():
+            if not process.name.isdigit():
+                continue
+            try:
+                if marker in (process / "cgroup").read_text(errors="replace"):
+                    processes.append(int(process.name))
+            except OSError:
+                continue
+        return processes
+
+
+def physical_x11_environments() -> list[dict[str, str]]:
+    loginctl = command_path("loginctl")
+    result = run_command(
+        [loginctl, "list-sessions", "--no-legend", "--no-pager"],
+        os.environ.copy(),
+    )
+    session_ids = [
+        line.split()[0] for line in result.stdout.splitlines() if line.split()
+    ]
+    candidates: list[dict[str, str]] = []
+    for session_id in session_ids:
+        details = run_command(
+            [
+                loginctl,
+                "show-session",
+                session_id,
+                "--property=Active",
+                "--property=Class",
+                "--property=Remote",
+                "--property=Scope",
+                "--property=Seat",
+                "--property=Type",
+                "--property=User",
+            ],
+            os.environ.copy(),
+            check=False,
+        )
+        properties = dict(
+            line.split("=", 1)
+            for line in details.stdout.splitlines()
+            if "=" in line
+        )
+        if not (
+            details.returncode == 0
+            and properties.get("Active") == "yes"
+            and properties.get("Class") == "user"
+            and properties.get("Remote") == "no"
+            and properties.get("Seat") == "seat0"
+            and properties.get("Type") == "x11"
+            and properties.get("User") == str(os.getuid())
+            and properties.get("Scope")
+        ):
+            continue
+        for pid in session_process_ids(properties["Scope"], os.getuid()):
+            values = read_process_environment(pid)
+            if values.get("DISPLAY"):
+                candidates.append(values)
+    if not candidates:
+        raise ConfigurationError(
+            "no active seat0 GNOME X11 session was found for this user"
+        )
+    return candidates
+
+
+def physical_shell_environment(bus: str) -> dict[str, str]:
+    candidates = physical_x11_environments()
+    by_display: dict[str, list[dict[str, str]]] = {}
+    for values in candidates:
+        display = canonical_display(values["DISPLAY"])
+        by_display.setdefault(display, []).append(values)
+
+    main_pid = systemd_shell_pid(bus)
+    if main_pid:
+        shell_values = read_process_environment(main_pid)
+        shell_display = shell_values.get("DISPLAY", "")
+        if shell_display:
+            canonical = canonical_display(shell_display)
+            if canonical in by_display:
+                matching = max(
+                    by_display[canonical],
+                    key=lambda item: bool(item.get("XAUTHORITY")),
+                )
+                return shell_values | {
+                    "DISPLAY": matching["DISPLAY"],
+                    "XAUTHORITY": matching.get("XAUTHORITY", ""),
+                }
+
+    if len(by_display) != 1:
+        raise ConfigurationError(
+            "multiple active seat0 GNOME X11 displays were found"
+        )
+    values = next(iter(by_display.values()))
+    return max(values, key=lambda item: bool(item.get("XAUTHORITY")))
+
+
+def resolve_desktop(
+    bus: str, requested_display: str, requested_xauthority: str
+) -> tuple[str, str]:
+    values = physical_shell_environment(bus)
+    physical_display = values.get("DISPLAY", "")
+    display = physical_display if requested_display == "auto" else requested_display
+    if canonical_display(display) != canonical_display(physical_display):
+        raise ConfigurationError(
+            f"requested display {display} is not the active seat0 X11 desktop"
+        )
+    xauthority = (
+        values.get("XAUTHORITY", "")
+        if requested_xauthority == "auto"
+        else requested_xauthority
+    )
+    if not display:
+        raise ConfigurationError("the physical GNOME shell has no DISPLAY")
+    return display, xauthority
+
+
+def parse_string_array(value: str) -> list[str]:
+    normalized = value.strip()
+    if normalized.startswith("@as "):
+        normalized = normalized[4:].strip()
+    try:
+        parsed = ast.literal_eval(normalized)
+    except (SyntaxError, ValueError) as error:
+        raise ConfigurationError(f"invalid GSettings string array: {value}") from error
+    if not isinstance(parsed, list) or not all(
+        isinstance(item, str) for item in parsed
+    ):
+        raise ConfigurationError(f"invalid GSettings string array: {value}")
+    return parsed
+
+
+def render_string_array(values: list[str]) -> str:
+    return repr(values) if values else "@as []"
+
+
+def gsettings_inventory(environment: dict[str, str]) -> dict[str, set[str]]:
+    gsettings = command_path("gsettings")
+    schemas = set(
+        run_command([gsettings, "list-schemas"], environment).stdout.splitlines()
+    )
+    inventory: dict[str, set[str]] = {}
+    for schema, _ in SETTING_SPECS.values():
+        if schema in schemas and schema not in inventory:
+            inventory[schema] = set(
+                run_command([gsettings, "list-keys", schema], environment)
+                .stdout.splitlines()
+            )
+    return inventory
+
+
+def setting_available(
+    inventory: dict[str, set[str]], schema: str, key: str
+) -> bool:
+    return schema in inventory and key in inventory[schema]
+
+
+def get_setting(environment: dict[str, str], schema: str, key: str) -> str:
+    return run_command(
+        [command_path("gsettings"), "get", schema, key], environment
+    ).stdout.strip()
+
+
+def set_setting(
+    environment: dict[str, str], schema: str, key: str, value: str
+) -> None:
+    run_command(
+        [command_path("gsettings"), "set", schema, key, value], environment
+    )
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def atomic_write(path: Path, data: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def snapshot_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"present": False, "content": b"", "mode": 0}
+    return {
+        "present": True,
+        "content": path.read_bytes(),
+        "mode": path.stat().st_mode & 0o777,
+    }
+
+
+def restore_file(path: Path, snapshot: dict[str, Any]) -> None:
+    if snapshot["present"]:
+        atomic_write(path, snapshot["content"], int(snapshot["mode"]))
+    else:
+        path.unlink(missing_ok=True)
+
+
+def load_state(config_dir: Path) -> dict[str, Any] | None:
+    path = config_dir / STATE_NAME
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConfigurationError(
+            f"cannot read shared desktop state: {error}"
+        ) from error
+    if value.get("schema_version") != STATE_VERSION:
+        raise ConfigurationError("unsupported shared desktop state version")
+    return value
+
+
+def save_state(config_dir: Path, state: dict[str, Any]) -> None:
+    data = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode()
+    atomic_write(config_dir / STATE_NAME, data, 0o600)
+
+
+def is_legacy_managed_unit(data: bytes) -> bool:
+    text = data.decode(errors="replace")
+    effective = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    return (
+        "GNOME Shell on X11 with physical-session recovery" in text
+        and "gnome-session-failed.target" not in effective
+        and "Restart=always" in effective
+    )
+
+
+def validate_unit_source(path: Path) -> bytes:
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise ConfigurationError(f"cannot read Shell recovery unit: {error}") from error
+    text = data.decode(errors="replace")
+    effective = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    if (
+        "gnome-session-failed.target" in effective
+        or "Restart=always" not in effective
+    ):
+        raise ConfigurationError("unsafe GNOME Shell recovery unit source")
+    return data
+
+
+def unit_target() -> Path:
+    return Path.home() / ".config/systemd/user" / SHELL_UNIT_NAME
+
+
+def reload_user_manager(environment: dict[str, str]) -> None:
+    run_command(
+        [command_path("systemctl"), "--user", "daemon-reload"], environment
+    )
+
+
+NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+
+
+def active_xrandr_transforms(output: str) -> dict[str, tuple[float, ...]]:
+    lines = output.splitlines()
+    transforms: dict[str, tuple[float, ...]] = {}
+    active_pattern = re.compile(
+        r"^(\S+) connected(?: primary)? \d+x\d+[+-]\d+[+-]\d+"
+    )
+    row_pattern = re.compile(rf"^\s*({NUMBER})\s+({NUMBER})\s+({NUMBER})\s*$")
+    for index, line in enumerate(lines):
+        match = active_pattern.match(line)
+        if not match:
+            continue
+        name = match.group(1)
+        for cursor in range(index + 1, min(index + 40, len(lines))):
+            if cursor > index + 1 and re.match(r"^\S", lines[cursor]):
+                break
+            transform = re.match(
+                rf"^\s*Transform:\s+({NUMBER})\s+({NUMBER})\s+({NUMBER})\s*$",
+                lines[cursor],
+            )
+            if not transform:
+                continue
+            values = [float(value) for value in transform.groups()]
+            for row in lines[cursor + 1 : cursor + 3]:
+                row_match = row_pattern.match(row)
+                if not row_match:
+                    raise ConfigurationError(f"incomplete RandR transform for {name}")
+                values.extend(float(value) for value in row_match.groups())
+            transforms[name] = tuple(values)
+            break
+        if name not in transforms:
+            raise ConfigurationError(
+                f"missing RandR transform for active output {name}"
+            )
+    if not transforms:
+        raise ConfigurationError("xrandr reported no active physical output")
+    return transforms
+
+
+def is_identity_transform(values: tuple[float, ...]) -> bool:
+    expected = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    return len(values) == 9 and all(
+        abs(actual - wanted) <= 0.000001
+        for actual, wanted in zip(values, expected)
+    )
+
+
+def check_identity_geometry(environment: dict[str, str]) -> None:
+    result = run_command(
+        [command_path("xrandr"), "--current", "--verbose"], environment
+    )
+    transforms = active_xrandr_transforms(result.stdout)
+    non_identity = [
+        name for name, values in transforms.items() if not is_identity_transform(values)
+    ]
+    if non_identity:
+        raise ConfigurationError(
+            "fractional RandR transform is active on: " + ", ".join(non_identity)
+        )
+
+
+def check_safety(environment: dict[str, str]) -> None:
+    features = parse_string_array(
+        get_setting(environment, *SETTING_SPECS["mutter_features"])
+    )
+    unsafe = DANGEROUS_MUTTER_FEATURES.intersection(features)
+    if unsafe:
+        raise ConfigurationError(
+            "unsafe Mutter X11 scaling features remain enabled: "
+            + ", ".join(sorted(unsafe))
+        )
+    check_identity_geometry(environment)
+
+
+def check_managed_profile(
+    config_dir: Path, environment: dict[str, str]
+) -> None:
+    state = load_state(config_dir)
+    if state is None or not state.get("active", False):
+        raise ConfigurationError("shared desktop safety is not enabled")
+    unit = state.get("unit", {})
+    target = Path(unit.get("target", ""))
+    try:
+        current_data = target.read_bytes()
+    except OSError as error:
+        raise ConfigurationError(
+            f"managed GNOME Shell recovery unit is unavailable: {error}"
+        ) from error
+    if sha256(current_data) != unit.get("managed_after_sha256"):
+        raise ConfigurationError("managed GNOME Shell recovery unit has changed")
+    result = run_command(
+        [
+            command_path("systemctl"),
+            "--user",
+            "show",
+            SHELL_UNIT_NAME,
+            "--property=FragmentPath",
+            "--property=OnFailure",
+            "--property=Restart",
+            "--property=RestartUSec",
+            "--property=StartLimitBurst",
+            "--property=StartLimitIntervalUSec",
+        ],
+        environment,
+    )
+    properties = dict(
+        line.split("=", 1)
+        for line in result.stdout.splitlines()
+        if "=" in line
+    )
+    on_failure = properties.get("OnFailure", "")
+    if (
+        Path(properties.get("FragmentPath", "")) != target
+        or properties.get("RestartUSec") != "3s"
+        or properties.get("StartLimitBurst") != "10"
+        or properties.get("StartLimitIntervalUSec") not in {"2min", "120s"}
+        or "org.gnome.Shell-disable-extensions.service" not in on_failure
+        or "gnome-session-failed.target" in on_failure
+        or properties.get("Restart") != "always"
+    ):
+        raise ConfigurationError("effective GNOME Shell recovery unit is unsafe")
+
+
+def desired_settings(
+    environment: dict[str, str], arguments: argparse.Namespace
+) -> tuple[dict[str, dict[str, str]], dict[str, set[str]]]:
+    inventory = gsettings_inventory(environment)
+    required = ("mutter_features", "text_scale")
+    for name in required:
+        schema, key = SETTING_SPECS[name]
+        if not setting_available(inventory, schema, key):
+            raise ConfigurationError(
+                f"required GSettings key is unavailable: {schema} {key}"
+            )
+
+    desired: dict[str, dict[str, str]] = {}
+    for name, (schema, key) in SETTING_SPECS.items():
+        if not setting_available(inventory, schema, key):
+            print(f"INFO optional GSettings key is unavailable: {schema} {key}")
+            continue
+        before = get_setting(environment, schema, key)
+        if name == "mutter_features":
+            after = render_string_array(
+                [
+                    feature
+                    for feature in parse_string_array(before)
+                    if feature not in DANGEROUS_MUTTER_FEATURES
+                ]
+            )
+        elif name == "text_scale":
+            after = format(arguments.text_scale, "g")
+        elif name == "desktop_icons":
+            after = repr(arguments.desktop_icons)
+        else:
+            after = str(arguments.dock_icon_size)
+        desired[name] = {
+            "schema": schema,
+            "key": key,
+            "before": before,
+            "after": after,
+        }
+    return desired, inventory
+
+
+def enable(arguments: argparse.Namespace, environment: dict[str, str]) -> None:
+    config_dir = Path(arguments.config_dir).expanduser().resolve()
+    source = Path(arguments.unit_source).expanduser().resolve()
+    source_data = validate_unit_source(source)
+    target = unit_target()
+    legacy_dropin = (
+        target.parent / f"{SHELL_UNIT_NAME}.d/90-uu-remote-recovery.conf"
+    )
+    previous_state = load_state(config_dir)
+    target_snapshot = snapshot_file(target)
+    dropin_snapshot = snapshot_file(legacy_dropin)
+    check_identity_geometry(environment)
+    desired, _ = desired_settings(environment, arguments)
+    current_settings = {
+        name: setting["before"] for name, setting in desired.items()
+    }
+
+    if previous_state is None or not previous_state.get("active", False):
+        target_data = target_snapshot["content"]
+        legacy_managed = bool(target_data and is_legacy_managed_unit(target_data))
+        unit_state = {
+            "target": str(target),
+            "before_present": bool(target_snapshot["present"]) and not legacy_managed,
+            "before_content": (
+                base64.b64encode(target_data).decode()
+                if target_snapshot["present"] and not legacy_managed
+                else ""
+            ),
+            "before_mode": (
+                int(target_snapshot["mode"])
+                if target_snapshot["present"] and not legacy_managed
+                else 0
+            ),
+            "managed_after_sha256": sha256(source_data),
+            "adopted_legacy_managed_unit": legacy_managed,
+        }
+        state = {
+            "schema_version": STATE_VERSION,
+            "active": False,
+            "settings": desired,
+            "unit": unit_state,
+        }
+    else:
+        state = copy.deepcopy(previous_state)
+        unit_state = state.get("unit")
+        if not isinstance(unit_state, dict):
+            raise ConfigurationError("saved GNOME Shell unit state is invalid")
+        expected_hash = unit_state.get("managed_after_sha256")
+        if (
+            not target_snapshot["present"]
+            or sha256(target_snapshot["content"]) != expected_hash
+        ):
+            raise ConfigurationError(
+                "refusing to overwrite a user-modified GNOME Shell unit"
+            )
+
+        merged_settings = copy.deepcopy(state.get("settings", {}))
+        for name, target_setting in desired.items():
+            if name in merged_settings:
+                target_setting["before"] = merged_settings[name]["before"]
+            merged_settings[name] = target_setting
+        state["settings"] = merged_settings
+        unit_state["managed_after_sha256"] = sha256(source_data)
+
+    state["active"] = True
+    save_state(config_dir, state)
+    try:
+        for setting in desired.values():
+            set_setting(
+                environment,
+                setting["schema"],
+                setting["key"],
+                setting["after"],
+            )
+        atomic_write(target, source_data, 0o644)
+
+        if legacy_dropin.exists():
+            legacy_text = legacy_dropin.read_text(errors="replace")
+            if (
+                "Keep the physical X11 session alive when Mutter crashes"
+                in legacy_text
+            ):
+                legacy_dropin.unlink()
+                try:
+                    legacy_dropin.parent.rmdir()
+                except OSError:
+                    pass
+
+        reload_user_manager(environment)
+        check_safety(environment)
+        check_managed_profile(config_dir, environment)
+    except (ConfigurationError, OSError) as error:
+        rollback_errors: list[str] = []
+        for name, setting in desired.items():
+            try:
+                set_setting(
+                    environment,
+                    setting["schema"],
+                    setting["key"],
+                    current_settings[name],
+                )
+            except ConfigurationError as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        for path, snapshot in (
+            (target, target_snapshot),
+            (legacy_dropin, dropin_snapshot),
+        ):
+            try:
+                restore_file(path, snapshot)
+            except OSError as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        try:
+            reload_user_manager(environment)
+        except ConfigurationError as rollback_error:
+            rollback_errors.append(str(rollback_error))
+        try:
+            if previous_state is None:
+                (config_dir / STATE_NAME).unlink(missing_ok=True)
+            else:
+                save_state(config_dir, previous_state)
+        except OSError as rollback_error:
+            rollback_errors.append(str(rollback_error))
+        if rollback_errors:
+            raise ConfigurationError(
+                f"{error}; rollback also failed: {'; '.join(rollback_errors)}"
+            ) from error
+        raise
+    print("PASS shared GNOME X11 desktop safety is enabled")
+
+
+def disable(arguments: argparse.Namespace, environment: dict[str, str]) -> None:
+    config_dir = Path(arguments.config_dir).expanduser().resolve()
+    state = load_state(config_dir)
+    if state is None:
+        print("INFO shared GNOME X11 desktop safety has no saved state")
+        return
+    if not state.get("active", False):
+        print("INFO shared GNOME X11 desktop safety is already disabled")
+        return
+
+    previous_state = copy.deepcopy(state)
+    current_settings: dict[str, str] = {}
+    restore_settings: list[dict[str, str]] = []
+    for name, setting in state.get("settings", {}).items():
+        try:
+            current = get_setting(
+                environment, setting["schema"], setting["key"]
+            )
+        except ConfigurationError:
+            if name not in {"desktop_icons", "dock_icon_size"}:
+                raise
+            print(f"INFO optional GSettings value is unavailable: {name}")
+            continue
+        current_settings[name] = current
+        if current == setting["after"]:
+            restore_settings.append(setting | {"name": name})
+        else:
+            print(f"INFO preserving user-modified GSettings value: {name}")
+
+    unit = state["unit"]
+    target = Path(unit["target"])
+    target_snapshot = snapshot_file(target)
+    changed_unit = bool(
+        target_snapshot["present"]
+        and sha256(target_snapshot["content"])
+        == unit["managed_after_sha256"]
+    )
+    unit_before_data = b""
+    unit_before_mode = 0
+    if changed_unit and unit["before_present"]:
+        try:
+            unit_before_data = base64.b64decode(
+                unit["before_content"], validate=True
+            )
+            unit_before_mode = int(unit["before_mode"])
+        except (binascii.Error, KeyError, TypeError, ValueError) as error:
+            raise ConfigurationError(
+                "saved GNOME Shell unit backup is invalid"
+            ) from error
+    if target_snapshot["present"] and not changed_unit:
+        print("INFO preserving user-modified GNOME Shell unit")
+    elif not target_snapshot["present"] and unit["before_present"]:
+        print("INFO GNOME Shell unit was removed after setup; preserving its absence")
+
+    try:
+        for setting in restore_settings:
+            set_setting(
+                environment,
+                setting["schema"],
+                setting["key"],
+                setting["before"],
+            )
+        if changed_unit:
+            if unit["before_present"]:
+                atomic_write(
+                    target,
+                    unit_before_data,
+                    unit_before_mode,
+                )
+            else:
+                target.unlink(missing_ok=True)
+            reload_user_manager(environment)
+        state["active"] = False
+        save_state(config_dir, state)
+    except (ConfigurationError, OSError) as error:
+        rollback_errors: list[str] = []
+        for name, current in current_settings.items():
+            setting = state["settings"][name]
+            try:
+                set_setting(
+                    environment,
+                    setting["schema"],
+                    setting["key"],
+                    current,
+                )
+            except ConfigurationError as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        try:
+            restore_file(target, target_snapshot)
+            if changed_unit:
+                reload_user_manager(environment)
+        except (ConfigurationError, OSError) as rollback_error:
+            rollback_errors.append(str(rollback_error))
+        try:
+            save_state(config_dir, previous_state)
+        except OSError as rollback_error:
+            rollback_errors.append(str(rollback_error))
+        if rollback_errors:
+            raise ConfigurationError(
+                f"{error}; rollback also failed: {'; '.join(rollback_errors)}"
+            ) from error
+        raise
+    print("PASS shared GNOME X11 desktop safety is disabled")
+
+
+def preflight_disable(
+    arguments: argparse.Namespace, environment: dict[str, str]
+) -> None:
+    config_dir = Path(arguments.config_dir).expanduser().resolve()
+    state = load_state(config_dir)
+    if state is None or not state.get("active", False):
+        print("PASS shared GNOME X11 desktop safety needs no rollback")
+        return
+    for name, setting in state.get("settings", {}).items():
+        try:
+            get_setting(environment, setting["schema"], setting["key"])
+        except ConfigurationError:
+            if name not in {"desktop_icons", "dock_icon_size"}:
+                raise
+    unit = state.get("unit")
+    if not isinstance(unit, dict) or not unit.get("target"):
+        raise ConfigurationError("saved GNOME Shell unit state is invalid")
+    if unit.get("before_present", False):
+        try:
+            base64.b64decode(unit["before_content"], validate=True)
+            int(unit["before_mode"])
+        except (binascii.Error, KeyError, TypeError, ValueError) as error:
+            raise ConfigurationError(
+                "saved GNOME Shell unit backup is invalid"
+            ) from error
+    run_command(
+        [command_path("systemctl"), "--user", "show-environment"],
+        environment,
+    )
+    print("PASS shared GNOME X11 desktop rollback preflight passed")
+
+
+def positive_text_scale(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("text scale must be numeric") from error
+    if parsed < 0.5 or parsed > 3.0:
+        raise argparse.ArgumentTypeError("text scale must be from 0.5 through 3.0")
+    return parsed
+
+
+def dock_size(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("dock icon size must be an integer") from error
+    if parsed < 8 or parsed > 128:
+        raise argparse.ArgumentTypeError("dock icon size must be from 8 through 128")
+    return parsed
+
+
+def x_display(value: str) -> str:
+    if value != "auto" and not re.fullmatch(
+        r":(?:0|[1-9]\d*)(?:\.\d+)?", value
+    ):
+        raise argparse.ArgumentTypeError(
+            "display must be auto or an X display such as :0"
+        )
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "action", choices=("enable", "check", "disable", "preflight-disable")
+    )
+    parser.add_argument("--bus", required=True)
+    parser.add_argument(
+        "--display", required=True, type=x_display, help="auto or an X display"
+    )
+    parser.add_argument("--xauthority", required=True, help="auto, empty, or a path")
+    parser.add_argument("--text-scale", type=positive_text_scale, default=1.5)
+    parser.add_argument(
+        "--desktop-icons",
+        choices=("tiny", "small", "standard", "large"),
+        default="large",
+    )
+    parser.add_argument("--dock-icon-size", type=dock_size, default=57)
+    parser.add_argument("--unit-source")
+    parser.add_argument("--config-dir", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = build_parser().parse_args(argv)
+    try:
+        if arguments.action in {"disable", "preflight-disable"}:
+            environment = os.environ.copy()
+            environment["DBUS_SESSION_BUS_ADDRESS"] = arguments.bus
+            if arguments.action == "disable":
+                disable(arguments, environment)
+            else:
+                preflight_disable(arguments, environment)
+            return 0
+        display, xauthority = resolve_desktop(
+            arguments.bus, arguments.display, arguments.xauthority
+        )
+        environment = desktop_environment(arguments.bus, display, xauthority)
+        if arguments.action == "enable":
+            if not arguments.unit_source:
+                raise ConfigurationError("enable requires --unit-source")
+            enable(arguments, environment)
+        elif arguments.action == "check":
+            check_safety(environment)
+            check_managed_profile(
+                Path(arguments.config_dir).expanduser().resolve(),
+                environment,
+            )
+            print(f"PASS physical GNOME X11 desktop {display} uses identity scaling")
+        return 0
+    except (ConfigurationError, OSError) as error:
+        print(f"FAIL {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

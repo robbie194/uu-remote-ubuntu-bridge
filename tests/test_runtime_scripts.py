@@ -162,6 +162,69 @@ class RuntimeScriptTests(unittest.TestCase):
         self.assertIn('idle_inhibitor_pid=$!', launcher)
         self.assertGreaterEqual(launcher.count('"$idle_inhibitor_pid"'), 4)
 
+    def test_x11_shared_desktop_guard_is_opt_in_and_reversible(self):
+        installer = (REPOSITORY / "install.sh").read_text()
+        launcher = (REPOSITORY / "scripts" / "uu-remote-bridge").read_text()
+        verifier = (REPOSITORY / "scripts" / "verify.sh").read_text()
+        uninstaller = (REPOSITORY / "uninstall.sh").read_text()
+        upgrader = (
+            REPOSITORY / "scripts" / "upgrade-uu-remote.sh"
+        ).read_text()
+        digest = (REPOSITORY / "scripts" / "runtime-source-digest").read_text()
+        helper = (
+            REPOSITORY / "scripts" / "configure-shared-desktop"
+        ).read_text()
+        shell_unit = (
+            REPOSITORY / "systemd" / "org.gnome.Shell@x11.service"
+        ).read_text()
+
+        self.assertIn("--x11-shared-desktop-guard on|off", installer)
+        self.assertIn("UURB_X11_SHARED_DESKTOP_GUARD=%s", installer)
+        self.assertIn("x11-xserver-utils", installer)
+        self.assertIn('"$shared_desktop_helper" enable', installer)
+        self.assertIn("--display auto", installer)
+        self.assertIn("--desktop-icons", installer)
+        self.assertIn("shared-desktop-state.json", uninstaller)
+        self.assertIn('"$shared_desktop_helper" preflight-disable', uninstaller)
+        self.assertIn('"$shared_desktop_helper" disable', uninstaller)
+        self.assertLess(
+            uninstaller.index('"$shared_desktop_helper" disable'),
+            uninstaller.index(
+                '"${systemctl_user[@]}" disable --now uu-remote-bridge.service'
+            ),
+        )
+        self.assertLess(
+            uninstaller.index('"$shared_desktop_helper" disable'),
+            uninstaller.index('rm -rf \\\n    "$HOME/.config/uu-remote-bridge"'),
+        )
+        self.assertIn("shared-desktop-state.json", upgrader)
+        self.assertIn("scripts/configure-shared-desktop", digest)
+        self.assertIn("systemd/org.gnome.Shell@x11.service", digest)
+
+        self.assertIn("check_x11_shared_desktop", launcher)
+        self.assertIn("/usr/bin/timeout --kill-after=2s 5s", launcher)
+        self.assertIn("--config-dir", launcher)
+        self.assertLess(
+            launcher.index("if ! check_x11_shared_desktop;"),
+            launcher.index("if ! start_idle_inhibitor;"),
+        )
+        self.assertIn("check_x11_shared_desktop quiet", launcher)
+        self.assertIn("three consecutive identity checks", launcher)
+        self.assertIn("X11 Shell recovery unit", verifier)
+        self.assertIn("gnome-session-failed.target", verifier)
+        self.assertIn('"preflight-disable"', helper)
+        self.assertIn("check_managed_profile", helper)
+        self.assertIn("check_identity_geometry(environment)", helper)
+        effective_unit = "\n".join(
+            line
+            for line in shell_unit.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("gnome-session-failed.target", effective_unit)
+        self.assertIn("RestartSec=3s", shell_unit)
+        self.assertIn("StartLimitIntervalSec=120s", shell_unit)
+        self.assertIn("StartLimitBurst=10", shell_unit)
+
     def test_physical_session_uses_manager_display_fallback(self):
         launcher = (REPOSITORY / "scripts" / "uu-remote-bridge").read_text()
 
@@ -176,6 +239,8 @@ class RuntimeScriptTests(unittest.TestCase):
             launcher.index('candidate_display="$(process_environment_value'),
         )
         self.assertIn('"$candidate_bus" == "$manager_bus"', launcher)
+        self.assertIn('"$candidate_seat" == seat0', launcher)
+        self.assertIn('"$candidate_remote" == no', launcher)
         self.assertIn(
             'candidate_display="${candidate_display:-$manager_display}"',
             launcher,
