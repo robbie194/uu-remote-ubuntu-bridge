@@ -652,3 +652,72 @@ Future release acceptance must include a genuinely stopped-prefix cold start
 and fresh signaling-room evidence. A warm process check can prove that an
 already-running relay survived; it cannot prove that startup-only driver and
 device enumeration will finish.
+
+## 19. Separate a GNOME Shell capture crash from a UU outage
+
+Two failures initially looked like ordinary UU disconnects. The first occurred
+on 2026-07-31 at 22:59. The second supplied a complete ordering on 2026-08-02:
+at 15:03:44 GNOME Shell received an X11 MIT-SHM `BadMatch` on request 130,
+minor opcode 4, and signal 5; at 15:03:57 systemd recorded the Shell process as
+`code=dumped, status=5/TRAP`. Only after that did GNOME Remote Desktop and
+FreeRDP report a broken pipe and UU lose the captured desktop.
+
+That ordering matters. UU and the network did not fail first. Restarting the
+bridge could reconnect to a replacement desktop, but could not repair the
+geometry interaction that terminated Shell. A Mutter/Shell package update
+also did not prevent the second occurrence, so the package version alone was
+not a sufficient explanation or fix.
+
+The physical X11 desktop still carried its former fractional-scale geometry.
+On 2026-07-28 the primary was published as `3424x1926` with `Xft.dpi=192`, and
+the relay had deliberately been aligned to `3424x1926`. That is why the old
+desktop text and icons looked comfortably large: GNOME was rendering an
+approximately 150% desktop before UU captured it. It was not evidence that UU
+had successfully matched the Windows controller's resolution.
+
+Re-selecting 150% on 2026-08-02 made the geometry cost visible. XRandR reported
+an `8544x2880` root, a `3424x1926` primary with a `1.337494` transform, and a
+second output with a `2.0` transform; GNOME's monitor state stored a scale near
+`1.495327`. The exact Mutter source-level defect is not available from these
+logs, but the repeated MIT-SHM size error, transformed X11 geometry, and
+continuous GNOME Remote Desktop capture establish the highest-confidence
+trigger boundary: Shell and the capture path disagreed about an image size
+while fractional RandR transforms were active.
+
+The recovery removed that boundary rather than hiding the disconnect:
+
+1. Disable Mutter's `x11-randr-fractional-scaling` experimental feature.
+2. Restore both `2560x1440` outputs to identity transforms, producing the
+   native `5120x1440` XRandR root.
+3. Change the UU relay from transformed `3424x1926` to the complete native
+   `2560x1440` primary.
+4. Run the X11 GNOME Shell unit with delayed automatic restart and without the
+   stock GNOME session-failure target, limiting a future Shell failure instead
+   of intentionally ending the physical login.
+5. Restore readability with UI-only settings: text scale `1.5`, DING `large`
+   (96 pixels), and Dock size `57`.
+
+The Windows controller reports a `1920x1080` local canvas. Its request to make
+the host use that resolution returned `screen not support resolution` with
+`error_code:501`. The stable design therefore keeps the full `2560x1440`
+source and lets UU fit it to `1920x1080`. At 100% display scale this naturally
+makes unadjusted GNOME UI look smaller than the former 150% transformed
+desktop. Text, DING, and Dock compensation restores the useful apparent size
+without changing any capture dimensions.
+
+The explicit persistent profile is:
+
+```bash
+./install.sh --skip-packages --skip-account-login \
+  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
+  --desktop-icon-size large --dock-icon-size 57
+```
+
+Post-recovery inspection confirmed identity transforms, the native dual-screen
+root, and a complete `2560x1440` relay frame. A bounded observation period did
+not show another `BadMatch`; it cannot prove that GNOME Shell, GNOME Remote
+Desktop, proprietary UU code, or the GPU can never fail. Re-enabling 125%,
+150%, or 175% X11 fractional display scaling would restore the observed risky
+geometry and invalidates this recovery profile. A separate NVIDIA GSP/Xid
+hard-lock, if observed, must be investigated as a host/GPU failure rather than
+being attributed to this MIT-SHM incident.

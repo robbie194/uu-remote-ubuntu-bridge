@@ -40,6 +40,9 @@ locked by the release manifest.
   the current physical Ubuntu desktop without a second GNOME RDP client
 - an explicit `uu-remote console` command for the localhost-only noVNC
   diagnostic view
+- an explicit shared-physical-desktop guard that rejects non-identity X11
+  transforms while persisting independent GNOME text, desktop-icon, and Dock
+  sizes without selecting monitor modes
 
 ### Security
 
@@ -71,6 +74,9 @@ locked by the release manifest.
   `SendInput` call while losing fast keyboard transitions, why slow typing and
   pointer motion could mask that fault, and why the direct X11 route fixes the
   local defect without claiming a universal upstream guarantee
+- record both observed GNOME Shell MIT-SHM `BadMatch`/`SIGTRAP` incidents, the
+  Shell-first failure order, the native-geometry recovery, the controller-side
+  scaling behavior, and the remaining non-zero recurrence risk
 
 ### Fixed
 
@@ -154,7 +160,12 @@ locked by the release manifest.
   allowing it to freeze the desktop
 - resolve extended direct-X11 navigation keys through the active display's
   keysym map instead of assuming one fixed XFree86 keycode table
-
+- remove X11 fractional RandR transforms from the shared physical desktop,
+  align its UU relay to the native `2560x1440` primary, and apply readability
+  compensation without changing capture geometry
+- restart the captured X11 GNOME Shell independently after a crash instead of
+  routing the complete physical session through GNOME's failure target; this
+  improves recovery but is not presented as proof that Shell cannot crash
 - wait for the actual FreeRDP relay window after Wine's short-lived Unix
   launcher exits, verify that the spawned GNOME daemon owns its configured
   listener instead of accepting another RDP service on the same port, and
@@ -168,8 +179,8 @@ locked by the release manifest.
 
 ### Validation
 
-- all 91 source, shell, documentation, updater, transaction, migration, and
-  helper-build tests pass
+- the complete source, shell, documentation, updater, transaction, migration,
+  shared-desktop, and helper-build test suite passes
 - production promotion from UU `4.33.0.8907` to `4.34.0.8979` passed both
   runtime checks while preserving the account, direct-X11 input profile, and
   the independently running XRDP process
@@ -183,6 +194,10 @@ locked by the release manifest.
 - the operator confirmed normal phone-keyboard typing was fixed; the first 72
   bounded live text calls all used `route=x11-text`, matched their requested
   counts, returned `error=0`, and completed in 0-2 ms
+- post-recovery inspection showed a `5120x1440` dual-monitor root with two
+  native `2560x1440` identity outputs, a `2560x1440` UU relay, and a complete
+  frame scaled for the `1920x1080` Windows controller after UU rejected a host
+  resize request with `error_code:501`
 
 ## [0.2.0] - 2026-07-18
 

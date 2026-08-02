@@ -24,7 +24,7 @@ local RDP relay, and makes mouse and keyboard control work normally.
 
 | Capability | Validated result |
 | --- | --- |
-| Desktop video | Live GNOME session at `1920x1080` |
+| Desktop video | Live GNOME session; `1920x1080` default, configurable |
 | Mouse | Motion, buttons, wheel, focus, and clicks through UU |
 | Keyboard | Physical keys, shortcuts, and normalized phone IME text |
 | Recovery | User systemd restart, boot autostart, and DLL re-injection |
@@ -119,6 +119,47 @@ small, or the UU server reports an invalid cross-process cursor handle:
 value such as `--cursor-size 64` changes only the guard's fallback arrow; it
 does not change Wine DPI or desktop geometry. Disable the extension with
 `--cursor-guard off` if the host does not need it.
+
+### Shared physical desktop display guard
+
+On an X11 host where UU and other remote tools share the logged-in physical
+desktop, keep GNOME Display scale at 100% and keep every active RandR output at
+an identity transform. Enabling 125%, 150%, or 175% X11 fractional display
+scaling changes the capture geometry and can reintroduce clipping or the GNOME
+Shell MIT-SHM crash documented below. Mode and relay size remain explicit
+operator choices; the guard does not select them.
+
+Use independent UI sizing when the native desktop is too small on a
+`1920x1080` controller. The validated host keeps its relay at `2560x1440` and
+uses this profile:
+
+```bash
+./install.sh --skip-packages --skip-account-login \
+  --resolution 2560x1440 \
+  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
+  --desktop-icon-size large --dock-icon-size 57
+```
+
+Here `large` is GNOME Desktop Icons NG's 96-pixel preset. These settings make
+text, desktop icons, and Dock icons larger without resizing the framebuffer,
+so UU still receives the complete native desktop and scales it to the
+controller. Do not turn GNOME fractional display scaling back on to obtain the
+same visual size. See the
+[2026-08-02 capture-crash record](docs/gnome-shell-capture-crash-20260802.md)
+for the evidence and remaining risk.
+
+Enabling the guard does not rewrite `monitors.xml` or force new monitor modes.
+It refuses an already transformed desktop, removes only the two unsafe Mutter
+fractional-scaling feature tokens, and preserves unrelated experimental
+features. While UU is running, the bridge rechecks the physical RandR
+transforms approximately every 10 seconds and tears down that relay attempt
+after three consecutive failures; normal service restart limits and backoff
+then apply.
+
+The bridge also holds GNOME's idle inhibitor while the desktop relay is active.
+Automatic idle blanking therefore cannot silently remove the shared desktop
+while UU is online. Manual locking, explicit display power-off, and system
+suspend remain separate operator or hardware actions.
 
 ### Local desktop app
 
@@ -503,6 +544,7 @@ ID, raw production log, screenshot, or private desktop content is committed.
 - [Mobile-keyboard parity handoff](docs/mobile-keyboard-parity-handoff.md)
 - [macOS current-desktop access](docs/macos-current-desktop.md)
 - [XRDP client stall and UU keyboard recovery](docs/xrdp-and-keyboard-recovery.md)
+- [GNOME Shell capture crash and display scaling recovery](docs/gnome-shell-capture-crash-20260802.md)
 - [Unattended startup after reboot](docs/unattended-startup.md)
 - [Methodology and tool inventory](docs/methodology-and-toolkit.md)
 - [Reverse-engineering record with exact `xxd` and `objdump` evidence](docs/reverse-engineering.md)

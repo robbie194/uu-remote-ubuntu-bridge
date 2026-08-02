@@ -47,6 +47,98 @@ Accepted values are `24` through `128`. Disable the extension with
 `--cursor-guard off` when it is unnecessary. It does not change XRDP, VNC,
 TeamViewer, the physical desktop resolution, or Wine's global DPI.
 
+## Desktop text and icons are too small on a shared physical desktop
+
+Do not use GNOME's 125%, 150%, or 175% Display scale to compensate. On X11,
+those choices enable fractional RandR transforms and change the framebuffer
+that GNOME Shell and GNOME Remote Desktop share. The old transformed desktop
+looked larger because GNOME rendered it at roughly 150%; that apparent size
+was not a controller-side UU setting.
+
+Keep Display at 100% and enlarge only the UI layers that do not change capture
+geometry. The current `2560x1440` host profile is:
+
+```bash
+./install.sh --skip-packages --skip-account-login \
+  --resolution 2560x1440 \
+  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
+  --desktop-icon-size large --dock-icon-size 57
+```
+
+`large` is DING's 96-pixel desktop-icon preset. Text scale `1.5` and Dock size
+`57` are deliberate visual compensation for a Windows controller whose local
+canvas is `1920x1080`. They do not change the physical `2560x1440` source or
+crop its right and bottom edges.
+
+Confirm that the geometry remains native after changing UI sizes:
+
+```bash
+gsettings get org.gnome.mutter experimental-features
+xrandr --current --verbose | rg ' connected|Transform:'
+sed -n 's/^UURB_RESOLUTION=//p' \
+  ~/.config/uu-remote-bridge/environment
+```
+
+The fractional-scaling feature should be absent, every active transform should
+be identity, and the relay should remain `2560x1440`. UU may log
+`screen not support resolution` with `error_code:501` when the `1920x1080`
+controller asks it to resize the host. That is expected on this profile: UU
+captures the full native frame and the controller fits it to its own canvas.
+
+The installer intentionally does not rewrite `monitors.xml` or choose display
+modes. If an active output is already transformed, it exits before changing
+the profile. Set GNOME Display scale back to 100%, confirm identity transforms,
+and rerun the command. Once enabled, the bridge checks the same invariant at
+startup and approximately every 10 seconds. Three consecutive failures tear
+down the relay; systemd then uses the bridge's normal 30-second restart backoff
+and rate limit. After restoring 100%, run:
+
+```bash
+systemctl --user reset-failed uu-remote-bridge.service
+systemctl --user restart uu-remote-bridge.service
+```
+
+The active bridge holds a GNOME idle inhibitor, so an automatic idle timeout
+does not blank away the captured desktop. This does not override an explicit
+lock, manual monitor power action, or system suspend.
+
+## GNOME Shell exits and UU disconnects during desktop capture
+
+Determine which component failed first instead of treating every disconnect
+as a UU transport failure:
+
+```bash
+journalctl -b --no-pager | \
+  rg 'gnome-shell|MIT-SHM|BadMatch|status=5/TRAP|Broken pipe'
+systemctl --user status org.gnome.Shell@x11.service --no-pager
+```
+
+On 2026-07-31 and 2026-08-02, GNOME Shell hit an MIT-SHM `BadMatch` and then
+terminated with `SIGTRAP`. GNOME Remote Desktop and FreeRDP reported their
+broken pipe only after Shell failed, and UU disconnected after its captured
+desktop disappeared. Restarting UU alone could restore service temporarily but
+did not remove the desktop-side trigger.
+
+Apply the shared-desktop guard above, then separately verify 100% display scale,
+identity transforms, the intended physical mode, and the intended relay size.
+The host also runs its X11 Shell unit
+with delayed automatic restart and without the stock GNOME session-failure
+target, so a Shell process failure does not intentionally log out the complete
+physical session. That supervision improves recovery; it does not prevent the
+underlying process from ever crashing.
+
+This is a complete Ubuntu 24.04 user-unit override because systemd cannot
+remove the inherited failure dependency from a drop-in. After a GNOME Shell
+package upgrade, rerun installation and compare the vendor unit before relying
+on the old override; future vendor directives are not inherited automatically.
+
+Do not re-enable X11 fractional scaling after recovery. There is no basis for
+an absolute "never fails again" guarantee: removing the observed transformed-
+capture combination removes the known trigger, while proprietary UU behavior,
+Mutter, GNOME Remote Desktop, and the GPU stack still remain outside one common
+failure boundary. See the
+[full incident record](gnome-shell-capture-crash-20260802.md).
+
 ## Controller remains at “finding routes”
 
 This message can be misleading: the controller may be waiting for the host to

@@ -128,6 +128,32 @@ The relay uses NetEase-independent GNOME credentials kept in the login
 keyring. FreeRDP reads the password from standard input, not its command line,
 and pins the SHA-256 fingerprint of GNOME's configured TLS certificate.
 
+### Display geometry invariant
+
+The validated shared physical X11 desktop keeps each monitor at its native mode
+with an identity RandR transform. On that host, two `2560x1440` outputs form a
+`5120x1440` root and GNOME Remote Desktop exposes the complete primary
+`2560x1440` desktop to the private UU relay. A `1920x1080` controller scales
+that complete frame locally; UU's attempted request to change the host to
+`1920x1080` returned `error_code:501`, so controller dimensions must not be
+treated as the source framebuffer dimensions.
+
+X11 fractional display scaling violates this invariant because Mutter
+publishes transformed logical outputs and a much larger root. During the
+2026-08-02 reproduction, selecting 150% produced an `8544x2880` root with
+non-identity `1.337494` and `2.0` transforms. Continuous GNOME Remote Desktop
+capture then shares geometry with Shell's MIT-SHM path. Two observed Shell
+crashes make that combination unsafe for this shared-desktop profile, although
+the available logs do not identify one exact Mutter source function.
+
+Readability is therefore a separate layer. The shared-desktop guard removes the
+two fractional-scaling feature tokens and rejects non-identity live transforms;
+it does not select a monitor mode, root size, primary output, or relay size.
+The current host separately uses 100% Display scale, text scale `1.5`, DING
+`large` (96 pixels), Dock size `57`, and a `2560x1440` relay. The UI values do
+not alter the RandR root, monitor transforms, relay size, or UU capture
+rectangle.
+
 ### FreeRDP SSPI compatibility
 
 The Jenkins Windows SDL client uses WinPR's SSPI ABI. Wine's native SSPI and
