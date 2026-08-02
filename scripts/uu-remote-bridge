@@ -91,7 +91,7 @@ fi
 export DISPLAY="$bridge_display"
 export WINEPREFIX="$wine_prefix"
 export WINEDEBUG=-all
-export WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml='
+export WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml=;winebth.sys='
 export OPENSSL_MODULES='C:\Program Files\FreeRDP\ossl-modules'
 export SDL_RENDER_DRIVER=software
 export UU_INPUT_BRIDGE_LOG="C:\\users\\$bridge_user\\Temp\\uu-input-bridge.log"
@@ -136,6 +136,7 @@ winlogon_pid=""
 input_broker_pid=""
 x11_input_pid=""
 server_supervisor_pid=""
+idle_inhibitor_pid=""
 grd_user_service_was_active=false
 desktop_bus=""
 desktop_display=""
@@ -269,6 +270,7 @@ cleanup() {
         "$winlogon_pid" \
         "$freerdp_pid" \
         "$grd_pid" \
+        "$idle_inhibitor_pid" \
         "$openbox_pid" \
         "$xvfb_pid"; do
         if [[ -n "$pid" ]]; then
@@ -285,6 +287,7 @@ cleanup() {
             "$winlogon_pid" \
             "$freerdp_pid" \
             "$grd_pid" \
+            "$idle_inhibitor_pid" \
             "$openbox_pid" \
             "$xvfb_pid"; do
             if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
@@ -303,6 +306,7 @@ cleanup() {
         "$winlogon_pid" \
         "$freerdp_pid" \
         "$grd_pid" \
+        "$idle_inhibitor_pid" \
         "$openbox_pid" \
         "$xvfb_pid"; do
         if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
@@ -467,6 +471,23 @@ discover_desktop_session() {
     return 1
 }
 
+start_idle_inhibitor() {
+    /usr/bin/env "DBUS_SESSION_BUS_ADDRESS=$desktop_bus" \
+        /usr/bin/gnome-session-inhibit \
+        --app-id uu-remote-bridge \
+        --reason 'UU Remote is sharing the physical desktop' \
+        --inhibit idle \
+        --inhibit-only &
+    idle_inhibitor_pid=$!
+
+    sleep 0.1
+    if ! kill -0 "$idle_inhibitor_pid" >/dev/null 2>&1; then
+        log 'Could not inhibit GNOME idle blanking for the shared desktop.'
+        return 1
+    fi
+    log 'GNOME idle blanking is inhibited while UU Remote is active.'
+}
+
 start_desktop_relay() {
     local -a desktop_environment
     local native_openssl_modules
@@ -476,6 +497,9 @@ start_desktop_relay() {
         until discover_desktop_session; do
             sleep 5
         done
+    fi
+    if ! start_idle_inhibitor; then
+        return 1
     fi
 
     native_openssl_modules="$(
@@ -990,6 +1014,7 @@ set +e
 critical_pids=(
     "$xvfb_pid"
     "$openbox_pid"
+    "$idle_inhibitor_pid"
     "$grd_pid"
     "$freerdp_pid"
     "$winlogon_pid"

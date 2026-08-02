@@ -75,16 +75,26 @@ class RuntimeScriptTests(unittest.TestCase):
         cleaner = (
             REPOSITORY / "scripts" / "clean-wine-device-registry"
         ).read_text()
+        launcher = (REPOSITORY / "scripts" / "uu-remote-bridge").read_text()
+        command = (REPOSITORY / "scripts" / "uu-remote").read_text()
+        agent = (REPOSITORY / "scripts" / "uu-agent").read_text()
         digest = (REPOSITORY / "scripts" / "runtime-source-digest").read_text()
 
         self.assertIn('devcon_backup="$devcon_exe.uu-original"', installer)
         self.assertIn("clean-wine-device-registry", installer)
         self.assertIn("system.reg.before-device-hygiene", cleaner)
+        self.assertIn("user.reg.before-device-hygiene", cleaner)
+        self.assertIn(r"HKEY_CURRENT_USER\Software\Wine\DllOverrides", cleaner)
         self.assertIn("--manage-service", cleaner)
         self.assertIn("restore an unknown devcon.exe backup", uninstaller)
         self.assertIn("overwrite an unknown live devcon.exe", uninstaller)
+        self.assertIn("/v winebth.sys /f", uninstaller)
+        self.assertIn("Wine Bluetooth DLL override remains", uninstaller)
+        self.assertNotIn("/v winebth.sys /f >/dev/null 2>&1 || true", uninstaller)
         self.assertIn("Wine device registry cannot accumulate", verifier)
         self.assertIn("repair-registry)", command)
+        for entrypoint in (installer, launcher, command, agent, cleaner):
+            self.assertIn("winebth.sys=", entrypoint)
         self.assertIn("scripts/clean-wine-device-registry", digest)
         self.assertIn("scripts/inspect-wine-device-registry.py", digest)
 
@@ -136,6 +146,21 @@ class RuntimeScriptTests(unittest.TestCase):
         self.assertIn("/usr/bin/openssl version -m", launcher)
         self.assertIn('"OPENSSL_MODULES=$native_openssl_modules"', launcher)
         self.assertIn("grd_user_service_was_active", launcher)
+
+    def test_shared_desktop_idle_blanking_is_inhibited(self):
+        installer = (REPOSITORY / "install.sh").read_text()
+        launcher = (REPOSITORY / "scripts" / "uu-remote-bridge").read_text()
+
+        self.assertIn("gnome-session-bin", installer)
+        self.assertIn("/usr/bin/gnome-session-inhibit", installer)
+        self.assertIn("DBUS_SESSION_BUS_ADDRESS=$desktop_bus", launcher)
+        self.assertIn("/usr/bin/gnome-session-inhibit", launcher)
+        self.assertIn("--app-id uu-remote-bridge", launcher)
+        self.assertIn("--inhibit idle", launcher)
+        self.assertIn("--inhibit-only", launcher)
+        self.assertNotIn("--app-id=uu-remote-bridge", launcher)
+        self.assertIn('idle_inhibitor_pid=$!', launcher)
+        self.assertGreaterEqual(launcher.count('"$idle_inhibitor_pid"'), 4)
 
     def test_physical_session_uses_manager_display_fallback(self):
         launcher = (REPOSITORY / "scripts" / "uu-remote-bridge").read_text()
@@ -637,6 +662,19 @@ class RuntimeScriptTests(unittest.TestCase):
             broker.index("started_ms = GetTickCount64();", serve_client),
             broker.index("response.result = send_relay_inputs", serve_client),
         )
+
+    def test_input_verification_accepts_broker_timing_fields(self):
+        verifier = (REPOSITORY / "scripts" / "verify.sh").read_text()
+
+        self.assertIn(
+            "broker_success_pattern='route=broker .*result=1 error=0'",
+            verifier,
+        )
+        self.assertIn(
+            'grep -Eq "$broker_success_pattern" < <(tail -500 "$bridge_log")',
+            verifier,
+        )
+        self.assertNotIn("grep -q 'route=broker result=1 error=0'", verifier)
 
     def test_direct_x11_keyboard_route_is_opt_in_and_fail_safe(self):
         builder = (REPOSITORY / "scripts" / "build-compat.sh").read_text()

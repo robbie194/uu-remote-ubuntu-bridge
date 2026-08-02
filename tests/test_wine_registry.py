@@ -17,6 +17,14 @@ class WineRegistryTests(unittest.TestCase):
             "WINE REGISTRY Version 2\n\n" + body,
             encoding="utf-8",
         )
+        (prefix / "user.reg").write_text(
+            "WINE REGISTRY Version 2\n\n"
+            r"""
+[Software\\Wine\\DllOverrides] 1
+"winebth.sys"=""
+""",
+            encoding="utf-8",
+        )
         return prefix
 
     def test_inspector_finds_only_audited_stale_device_artifacts(self):
@@ -98,6 +106,44 @@ class WineRegistryTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+
+    def test_inspector_requires_disabled_bluetooth_dll_override(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = self.write_registry(
+                Path(temporary),
+                r"""
+[System\\ControlSet001\\Services\\winebth] 1
+"Start"=dword:00000004
+""",
+            )
+            (prefix / "user.reg").write_text(
+                "WINE REGISTRY Version 2\n",
+                encoding="utf-8",
+            )
+            inspected = subprocess.run(
+                [str(INSPECTOR), "inspect", str(prefix)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            status = json.loads(inspected.stdout)
+            self.assertFalse(status["winebth_override_disabled"])
+            self.assertFalse(status["clean"])
+
+            plan = subprocess.run(
+                [str(INSPECTOR), "plan", str(prefix)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual("", plan.stdout)
+
+            verified = subprocess.run(
+                [str(INSPECTOR), "verify", str(prefix)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, verified.returncode)
 
     def test_preflight_refuses_an_unrelated_root_hid_device(self):
         with tempfile.TemporaryDirectory() as temporary:

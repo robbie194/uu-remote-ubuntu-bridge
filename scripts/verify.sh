@@ -501,11 +501,12 @@ if ((stability_seconds > 0)) && [[ -n "$server_pid" ]]; then
     fi
 fi
 
+broker_success_pattern='route=broker .*result=1 error=0'
 if [[ -f "$bridge_log" ]] && \
-   tail -500 "$bridge_log" | grep -q 'route=broker result=1 error=0'; then
+   grep -Eq "$broker_success_pattern" < <(tail -500 "$bridge_log"); then
     pass 'at least one real input event completed through the broker'
 elif [[ -f "$bridge_log" ]] && \
-     grep -q 'route=broker result=1 error=0' "$bridge_log"; then
+     grep -Eq "$broker_success_pattern" "$bridge_log"; then
     pass 'historical controller input completed through the broker'
 else
     printf 'INFO  no remote input event has been observed yet\n'

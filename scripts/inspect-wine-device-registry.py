@@ -19,7 +19,9 @@ MOUSE_CLASS_GUID = "{4d36e96f-e325-11ce-bfc1-08002be10318}"
 @dataclass(frozen=True)
 class RegistryStatus:
     registry_bytes: int
+    user_registry_bytes: int
     winebth_start: int | None
+    winebth_override_disabled: bool
     winebth_sections: int
     winebth_devices: int
     gvinput_hid_roots: int
@@ -33,7 +35,8 @@ class RegistryStatus:
     @property
     def clean(self) -> bool:
         return (
-            self.winebth_start == 4
+            self.winebth_override_disabled
+            and self.winebth_start == 4
             and self.winebth_devices == 0
             and self.gvinput_hid_roots == 0
             and self.gvinput_mouse_roots == 0
@@ -85,6 +88,14 @@ def dword_value(lines: list[str], name: str) -> int | None:
     return None
 
 
+def has_empty_string_value(lines: list[str], name: str) -> bool:
+    pattern = re.compile(
+        rf'^"{re.escape(name)}"=""$',
+        re.IGNORECASE,
+    )
+    return any(pattern.match(line) for line in lines)
+
+
 def windows_key(name: str) -> str:
     parts = section_parts(name)
     if len(parts) < 2 or parts[:2] != ["system", "controlset001"]:
@@ -96,7 +107,10 @@ def windows_key(name: str) -> str:
 
 
 def inspect(
-    sections: dict[str, list[str]], registry_bytes: int
+    sections: dict[str, list[str]],
+    user_sections: dict[str, list[str]],
+    registry_bytes: int,
+    user_registry_bytes: int,
 ) -> tuple[RegistryStatus, list[str]]:
     hid_roots: list[str] = []
     mouse_roots: list[str] = []
@@ -108,6 +122,11 @@ def inspect(
     winebth_sections: list[str] = []
     winebth_device_roots: set[tuple[str, ...]] = set()
     winebth_start: int | None = None
+    override_section = SEPARATOR.join(["software", "wine", "dlloverrides"])
+    winebth_override_disabled = has_empty_string_value(
+        user_sections.get(override_section, []),
+        "winebth.sys",
+    )
 
     for name, lines in sections.items():
         parts = section_parts(name)
@@ -199,7 +218,9 @@ def inspect(
 
     status = RegistryStatus(
         registry_bytes=registry_bytes,
+        user_registry_bytes=user_registry_bytes,
         winebth_start=winebth_start,
+        winebth_override_disabled=winebth_override_disabled,
         winebth_sections=len(winebth_sections),
         winebth_devices=len(winebth_device_roots),
         gvinput_hid_roots=len(hid_roots),
@@ -220,10 +241,19 @@ def main() -> int:
     args = parser.parse_args()
 
     registry = args.prefix / "system.reg"
+    user_registry = args.prefix / "user.reg"
     if not registry.is_file():
         parser.error(f"Wine system registry does not exist: {registry}")
+    if not user_registry.is_file():
+        parser.error(f"Wine user registry does not exist: {user_registry}")
     sections = parse_registry(registry)
-    status, delete_keys = inspect(sections, registry.stat().st_size)
+    user_sections = parse_registry(user_registry)
+    status, delete_keys = inspect(
+        sections,
+        user_sections,
+        registry.stat().st_size,
+        user_registry.stat().st_size,
+    )
 
     if args.command == "inspect":
         payload = asdict(status)
@@ -240,7 +270,8 @@ def main() -> int:
         return 1
 
     if args.command == "plan":
-        print("\n".join(delete_keys))
+        if delete_keys:
+            print("\n".join(delete_keys))
         return 0
 
     if args.command == "preflight":

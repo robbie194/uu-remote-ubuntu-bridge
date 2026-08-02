@@ -101,12 +101,12 @@ fi
 port="$(tr -d '[:space:]' < "$ready_file")"
 
 DISPLAY="$display" WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-    WINEDLLOVERRIDES='mscoree,mshtml=' \
+    WINEDLLOVERRIDES='mscoree,mshtml=;winebth.sys=' \
     /opt/wine-stable/bin/wineboot -u >/dev/null 2>&1
 broker_log_windows="$(DISPLAY="$display" WINEPREFIX="$wine_prefix" \
     WINEDEBUG=-all /opt/wine-stable/bin/winepath -w "$broker_log")"
 DISPLAY="$display" WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-    WINEDLLOVERRIDES='mscoree,mshtml=' \
+    WINEDLLOVERRIDES='mscoree,mshtml=;winebth.sys=' \
     UU_INPUT_BROKER_LOG="$broker_log_windows" \
     UURB_X11_INPUT_PORT="$port" UURB_X11_INPUT_TOKEN="$token" \
     UURB_TEXT_KEY_DELAY_MS=8 UURB_PHYSICAL_KEY_DELAY_MS=0 \
@@ -116,7 +116,7 @@ broker_pid=$!
 sleep 0.5
 
 DISPLAY="$display" WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-    WINEDLLOVERRIDES='mscoree,mshtml=' \
+    WINEDLLOVERRIDES='mscoree,mshtml=;winebth.sys=' \
     /opt/wine-stable/bin/wine "$temporary_dir/uu-text-probe.exe"
 sleep 0.2
 

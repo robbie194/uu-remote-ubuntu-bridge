@@ -120,10 +120,36 @@ if [[ -f "$devcon_backup" ]]; then
     install -m 0755 "$devcon_backup" "$devcon"
 fi
 if [[ "$purge" == false && -f "$wine_prefix/system.reg" ]]; then
-    WINEPREFIX="$wine_prefix" WINEDEBUG=-all \
-        /opt/wine-stable/bin/wine reg add \
+    wine_environment=(
+        /usr/bin/env
+        "WINEPREFIX=$wine_prefix"
+        WINEDEBUG=-all
+        'WINEDLLOVERRIDES=winedbg.exe=d;mscoree,mshtml=;winebth.sys='
+        /opt/wine-stable/bin/wine
+    )
+    "${wine_environment[@]}" reg add \
         'HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\winebth' \
         /v Start /t REG_DWORD /d 3 /f >/dev/null
+    if "${wine_environment[@]}" reg query \
+        'HKEY_CURRENT_USER\Software\Wine\DllOverrides' \
+        /v winebth.sys >/dev/null 2>&1; then
+        if ! "${wine_environment[@]}" reg delete \
+            'HKEY_CURRENT_USER\Software\Wine\DllOverrides' \
+            /v winebth.sys /f >/dev/null; then
+            "$repo_dir/scripts/stop-wine-prefix" \
+                "$wine_prefix" /opt/wine-stable/bin/wineserver || true
+            printf 'Failed to restore the Wine Bluetooth DLL override.\n' >&2
+            exit 1
+        fi
+    fi
+    if "${wine_environment[@]}" reg query \
+        'HKEY_CURRENT_USER\Software\Wine\DllOverrides' \
+        /v winebth.sys >/dev/null 2>&1; then
+        "$repo_dir/scripts/stop-wine-prefix" \
+            "$wine_prefix" /opt/wine-stable/bin/wineserver || true
+        printf 'Wine Bluetooth DLL override remains after removal.\n' >&2
+        exit 1
+    fi
     "$repo_dir/scripts/stop-wine-prefix" \
         "$wine_prefix" /opt/wine-stable/bin/wineserver || true
 fi

@@ -59,24 +59,27 @@ for required in "$inspector" "$stop_prefix" "$wine_bin"; do
         exit 1
     fi
 done
-if [[ ! -f "$wine_prefix/system.reg" ]]; then
-    printf 'Wine system registry is unavailable: %s/system.reg\n' \
-        "$wine_prefix" >&2
-    exit 1
-fi
+for registry in system.reg user.reg; do
+    if [[ ! -f "$wine_prefix/$registry" ]]; then
+        printf 'Wine registry is unavailable: %s/%s\n' \
+            "$wine_prefix" "$registry" >&2
+        exit 1
+    fi
+done
 
 service_was_active=false
 restore_registry=false
-backup=''
+system_backup=''
+user_backup=''
 on_exit() {
     local status=$?
     trap - EXIT
 
     "$stop_prefix" "$wine_prefix" "$wineserver_bin" >/dev/null 2>&1 || true
-    if ((status != 0)) && [[ "$restore_registry" == true && -f "$backup" ]]; then
-        /bin/cp -a "$backup" "$wine_prefix/system.reg"
-        printf 'Restored Wine registry backup after cleanup failure: %s\n' \
-            "$backup" >&2
+    if ((status != 0)) && [[ "$restore_registry" == true ]]; then
+        /bin/cp -a "$system_backup" "$wine_prefix/system.reg"
+        /bin/cp -a "$user_backup" "$wine_prefix/user.reg"
+        printf 'Restored Wine registry backups after cleanup failure.\n' >&2
     fi
     if [[ "$service_was_active" == true ]]; then
         "${systemctl_user[@]}" start uu-remote-bridge.service \
@@ -106,14 +109,20 @@ mapfile -t delete_keys < <("$inspector" plan "$wine_prefix")
 
 backup_dir="$wine_prefix/compat/registry-backups"
 install -d -m 0700 "$backup_dir"
-backup="$backup_dir/system.reg.before-device-hygiene-$(date +%Y%m%dT%H%M%S)-$$"
-/bin/cp -a --reflink=auto "$wine_prefix/system.reg" "$backup"
-chmod 0600 "$backup"
+backup_stamp="$(date +%Y%m%dT%H%M%S)-$$"
+system_backup="$backup_dir/system.reg.before-device-hygiene-$backup_stamp"
+user_backup="$backup_dir/user.reg.before-device-hygiene-$backup_stamp"
+/bin/cp -a --reflink=auto "$wine_prefix/system.reg" "$system_backup"
+/bin/cp -a --reflink=auto "$wine_prefix/user.reg" "$user_backup"
+chmod 0600 "$system_backup" "$user_backup"
 restore_registry=true
 
 export WINEPREFIX="$wine_prefix"
 export WINEDEBUG=-all
-export WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml='
+export WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml=;winebth.sys='
+"$wine_bin" reg add \
+    'HKEY_CURRENT_USER\Software\Wine\DllOverrides' \
+    /v winebth.sys /t REG_SZ /d '' /f >/dev/null
 "$wine_bin" reg add \
     'HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\winebth' \
     /v Start /t REG_DWORD /d 4 /f >/dev/null
@@ -131,5 +140,5 @@ done
 "$stop_prefix" "$wine_prefix" "$wineserver_bin"
 "$inspector" verify "$wine_prefix"
 restore_registry=false
-printf 'Wine device registry cleanup complete; backup retained at %s\n' \
-    "$backup"
+printf 'Wine device registry cleanup complete; backups retained in %s\n' \
+    "$backup_dir"

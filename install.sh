@@ -391,7 +391,7 @@ install_packages() {
         acl aria2 binutils ca-certificates cmake crudini curl freerdp3-x11 \
         gcc \
         gcc-mingw-w64-x86-64 \
-        git gnome-remote-desktop iproute2 jq libsecret-tools libx11-6 \
+        git gnome-remote-desktop gnome-session-bin iproute2 jq libsecret-tools libx11-6 \
         libxml2-utils libxtst6 meson novnc \
         ninja-build openbox openssl p7zip-full patch python3 python3-attr \
         python3-gi python3-jinja2 tar tigervnc-viewer websockify \
@@ -451,7 +451,8 @@ for command in curl meson ninja patch readelf sha256sum /usr/bin/systemctl \
     timeout \
     "$grdctl_bin" "$openssl_bin" "$python_bin" "$secret_tool_bin" \
     "$wine_bin" "$wineserver_bin" /usr/bin/Xvfb /usr/bin/gsettings \
-    /usr/bin/awk /usr/bin/ip /usr/bin/mcookie /usr/bin/openbox \
+    /usr/bin/awk /usr/bin/gnome-session-inhibit /usr/bin/ip \
+    /usr/bin/mcookie /usr/bin/openbox \
     /usr/bin/script /usr/bin/sort /usr/bin/ss /usr/bin/xauth \
     /usr/bin/vncviewer /usr/bin/websockify /usr/bin/x11vnc /usr/bin/xdotool \
     /usr/libexec/gnome-remote-desktop-daemon; do
@@ -489,7 +490,7 @@ esac
 
 export WINEPREFIX="$wine_prefix"
 export WINEDEBUG=-all
-export WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml='
+export WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml=;winebth.sys='
 
 bridge_was_active=false
 if [[ "$prefix_only" == false ]] &&
