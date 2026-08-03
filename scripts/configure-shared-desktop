@@ -568,7 +568,6 @@ def desired_settings(
 
 def repair_ui(arguments: argparse.Namespace, environment: dict[str, str]) -> None:
     """Restore only the readability preferences; never touch RandR state."""
-    inventory = gsettings_inventory(environment)
     targets = (
         ("org.gnome.desktop.interface", "text-scaling-factor", str(arguments.text_scale), True),
         ("org.gnome.shell.extensions.ding", "icon-size", repr(arguments.desktop_icons), False),
@@ -580,11 +579,13 @@ def repair_ui(arguments: argparse.Namespace, environment: dict[str, str]) -> Non
         ),
     )
     for schema, key, value, required in targets:
-        if not setting_available(inventory, schema, key):
+        try:
+            current = get_setting(environment, schema, key)
+        except ConfigurationError:
             if required:
-                raise ConfigurationError(f"required GSettings key is unavailable: {schema} {key}")
+                raise
             continue
-        if get_setting(environment, schema, key) != value:
+        if current != value:
             set_setting(environment, schema, key, value)
     print("PASS shared GNOME UI readability preferences are enforced")
 

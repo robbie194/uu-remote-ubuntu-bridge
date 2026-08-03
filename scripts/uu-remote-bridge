@@ -584,8 +584,7 @@ start_desktop_relay() {
         done
     fi
     if ! repair_x11_shared_desktop_ui; then
-        log 'Could not enforce the configured shared-desktop UI readability profile.'
-        return 1
+        log 'Could not enforce the configured shared-desktop UI readability profile; retaining the relay.'
     fi
     if ! check_x11_shared_desktop; then
         return 1
@@ -1101,8 +1100,7 @@ supervise_server() {
             if ((shared_desktop_checks >= 40)); then
                 shared_desktop_checks=0
                 if ! repair_x11_shared_desktop_ui; then
-                    log 'The shared-desktop UI readability profile could not be restored; stopping the relay.'
-                    return 1
+                    log 'The shared-desktop UI readability profile could not be restored; retaining the relay.'
                 fi
                 if ! check_x11_shared_desktop quiet; then
                     shared_desktop_failures=$((shared_desktop_failures + 1))
