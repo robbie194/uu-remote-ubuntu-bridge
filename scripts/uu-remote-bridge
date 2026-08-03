@@ -14,6 +14,9 @@ network_interface="${UURB_NETWORK_INTERFACE:-all}"
 cursor_guard_setting="${UURB_CURSOR_GUARD:-off}"
 cursor_size_setting="${UURB_CURSOR_SIZE:-auto}"
 x11_shared_desktop_guard="${UURB_X11_SHARED_DESKTOP_GUARD:-off}"
+desktop_text_scale="${UURB_DESKTOP_TEXT_SCALE:-1.0}"
+desktop_icon_size="${UURB_DESKTOP_ICON_SIZE:-standard}"
+dock_icon_size="${UURB_DOCK_ICON_SIZE:-48}"
 wine_prefix="${UURB_WINEPREFIX:-$HOME/.local/share/wineprefixes/uu-remote}"
 manager_display="${DISPLAY:-}"
 manager_wayland="${WAYLAND_DISPLAY:-}"
@@ -43,6 +46,12 @@ if [[ "$bridge_display" != auto &&
       "$cursor_guard_setting" != on ]] ||
    [[ "$x11_shared_desktop_guard" != off &&
       "$x11_shared_desktop_guard" != on ]] ||
+   [[ ! "$desktop_text_scale" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+   [[ "$desktop_icon_size" != tiny &&
+      "$desktop_icon_size" != small &&
+      "$desktop_icon_size" != standard &&
+      "$desktop_icon_size" != large ]] ||
+   [[ ! "$dock_icon_size" =~ ^[0-9]+$ ]] ||
    [[ "$cursor_size_setting" != auto &&
       ! "$cursor_size_setting" =~ ^[0-9]{1,3}$ ]] ||
    [[ "$wine_prefix" != /* ]]; then
@@ -51,12 +60,18 @@ if [[ "$bridge_display" != auto &&
 fi
 resolution_width="${resolution%x*}"
 resolution_height="${resolution#*x}"
+if ! /usr/bin/awk -v value="$desktop_text_scale" \
+    'BEGIN { exit !(value >= 0.5 && value <= 3.0) }'; then
+    printf 'UURB desktop text scale is outside the supported range.\n' >&2
+    exit 2
+fi
 if ((rdp_port < 1024 || rdp_port > 65535 ||
      resolution_width < 640 || resolution_width > 16384 ||
      resolution_height < 480 || resolution_height > 16384 ||
      (grd_fd_restart_threshold != 0 &&
       (grd_fd_restart_threshold < 512 ||
-       grd_fd_restart_threshold > 60000)) ||
+      grd_fd_restart_threshold > 60000)) ||
+     dock_icon_size < 8 || dock_icon_size > 128 ||
      text_key_delay_ms > 50 || physical_key_delay_ms > 50)); then
     printf 'UURB port, resolution, descriptor threshold, or keyboard delay is outside the supported range.\n' >&2
     exit 2
@@ -540,6 +555,24 @@ check_x11_shared_desktop() {
     fi
 }
 
+repair_x11_shared_desktop_ui() {
+    [[ "$x11_shared_desktop_guard" == on ]] || return 0
+    [[ "$desktop_session_type" == x11 ]] || return 0
+    if [[ ! -x "$shared_desktop_bin" ]]; then
+        log 'The X11 shared-desktop guard helper is missing; cannot enforce UI readability.'
+        return 1
+    fi
+    "$shared_desktop_bin" repair \
+        --bus "$desktop_bus" \
+        --display "$desktop_display" \
+        --xauthority "${desktop_xauthority:-auto}" \
+        --config-dir "$shared_desktop_config_dir" \
+        --text-scale "$desktop_text_scale" \
+        --desktop-icons "$desktop_icon_size" \
+        --dock-icon-size "$dock_icon_size" \
+        >/dev/null
+}
+
 start_desktop_relay() {
     local -a desktop_environment
     local native_openssl_modules
@@ -549,6 +582,10 @@ start_desktop_relay() {
         until discover_desktop_session; do
             sleep 5
         done
+    fi
+    if ! repair_x11_shared_desktop_ui; then
+        log 'Could not enforce the configured shared-desktop UI readability profile.'
+        return 1
     fi
     if ! check_x11_shared_desktop; then
         return 1
@@ -1063,6 +1100,10 @@ supervise_server() {
             shared_desktop_checks=$((shared_desktop_checks + 1))
             if ((shared_desktop_checks >= 40)); then
                 shared_desktop_checks=0
+                if ! repair_x11_shared_desktop_ui; then
+                    log 'The shared-desktop UI readability profile could not be restored; stopping the relay.'
+                    return 1
+                fi
                 if ! check_x11_shared_desktop quiet; then
                     shared_desktop_failures=$((shared_desktop_failures + 1))
                     if ((shared_desktop_failures >= 3)); then

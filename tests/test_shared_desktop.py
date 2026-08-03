@@ -128,6 +128,32 @@ class SharedDesktopTests(unittest.TestCase):
 
         self.assertEqual("1.0", desired["text_scale"]["after"])
 
+    def test_repair_action_is_available_without_geometry_changes(self) -> None:
+        arguments = shared_desktop.build_parser().parse_args(
+            [
+                "repair",
+                "--bus",
+                "unix:path=/run/user/1000/bus",
+                "--display",
+                ":0",
+                "--xauthority",
+                "auto",
+                "--config-dir",
+                "/tmp/uu-remote-bridge",
+                "--text-scale",
+                "1.5",
+                "--desktop-icons",
+                "large",
+                "--dock-icon-size",
+                "57",
+            ]
+        )
+
+        self.assertEqual("repair", arguments.action)
+        self.assertEqual(1.5, arguments.text_scale)
+        self.assertEqual("large", arguments.desktop_icons)
+        self.assertEqual(57, arguments.dock_icon_size)
+
     def test_xrandr_parser_accepts_identity_and_rejects_fractional(self) -> None:
         identity = """DP-4 connected primary 2560x1440-2560+0
 \tTransform:  1.000000 0.000000 0.000000

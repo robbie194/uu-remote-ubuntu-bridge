@@ -566,6 +566,29 @@ def desired_settings(
     return desired, inventory
 
 
+def repair_ui(arguments: argparse.Namespace, environment: dict[str, str]) -> None:
+    """Restore only the readability preferences; never touch RandR state."""
+    inventory = gsettings_inventory(environment)
+    targets = (
+        ("org.gnome.desktop.interface", "text-scaling-factor", str(arguments.text_scale), True),
+        ("org.gnome.shell.extensions.ding", "icon-size", repr(arguments.desktop_icons), False),
+        (
+            "org.gnome.shell.extensions.dash-to-dock",
+            "dash-max-icon-size",
+            str(arguments.dock_icon_size),
+            False,
+        ),
+    )
+    for schema, key, value, required in targets:
+        if not setting_available(inventory, schema, key):
+            if required:
+                raise ConfigurationError(f"required GSettings key is unavailable: {schema} {key}")
+            continue
+        if get_setting(environment, schema, key) != value:
+            set_setting(environment, schema, key, value)
+    print("PASS shared GNOME UI readability preferences are enforced")
+
+
 def enable(arguments: argparse.Namespace, environment: dict[str, str]) -> None:
     config_dir = Path(arguments.config_dir).expanduser().resolve()
     source = Path(arguments.unit_source).expanduser().resolve()
@@ -866,7 +889,8 @@ def x_display(value: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "action", choices=("enable", "check", "disable", "preflight-disable")
+        "action",
+        choices=("enable", "check", "repair", "disable", "preflight-disable"),
     )
     parser.add_argument("--bus", required=True)
     parser.add_argument(
@@ -904,6 +928,8 @@ def main(argv: list[str] | None = None) -> int:
             if not arguments.unit_source:
                 raise ConfigurationError("enable requires --unit-source")
             enable(arguments, environment)
+        elif arguments.action == "repair":
+            repair_ui(arguments, environment)
         elif arguments.action == "check":
             check_safety(environment)
             check_managed_profile(

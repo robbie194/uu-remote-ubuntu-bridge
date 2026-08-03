@@ -65,10 +65,35 @@ the independent UI settings at their native defaults:
   --desktop-icon-size standard --dock-icon-size 48
 ```
 
-The three UI values do not change the physical `2560x1440` source. They are
-applied at install time but are not runtime guard invariants, so later GNOME
-Settings or dconf changes can replace them. Use explicit non-default values
-only when that behavior is acceptable.
+The three UI values do not change the physical `2560x1440` source. When the
+shared-desktop guard is enabled, the bridge also reapplies the configured
+values at startup and during its periodic health check. This protects against
+an installer/upgrade using the native defaults or another dconf writer
+replacing the readability profile, without changing RandR geometry.
+
+For the larger remote profile used on this host:
+
+```bash
+./install.sh --skip-packages --skip-account-login \
+  --resolution 2560x1440 \
+  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
+  --desktop-icon-size large --dock-icon-size 57
+```
+
+The repair loop only writes the text, DING icon, and Dock size keys. It never
+reenables fractional display scaling, changes monitor modes, or changes the
+capture rectangle.
+
+### Why the profile previously returned to native size
+
+The repository's `7ae4660` recovery change deliberately changed the installer
+defaults to `1.0` text, `standard` desktop icons, and a native Dock size. A
+subsequent installer or upgrade therefore called the shared-desktop configurator
+with those values and wrote them to dconf. That was the known reset observed
+during recovery; it was not GNOME Shell converting a working UI-only profile
+into fractional RandR scaling. The dconf database does not retain the writing
+process name, so an additional later write cannot be attributed to a specific
+application from the existing journal.
 
 Confirm that the geometry remains native after changing UI sizes:
 
