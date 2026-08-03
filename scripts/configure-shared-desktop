@@ -552,7 +552,7 @@ def desired_settings(
                 ]
             )
         elif name == "text_scale":
-            after = format(arguments.text_scale, "g")
+            after = str(arguments.text_scale)
         elif name == "desktop_icons":
             after = repr(arguments.desktop_icons)
         else:
@@ -873,13 +873,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--display", required=True, type=x_display, help="auto or an X display"
     )
     parser.add_argument("--xauthority", required=True, help="auto, empty, or a path")
-    parser.add_argument("--text-scale", type=positive_text_scale, default=1.5)
+    parser.add_argument("--text-scale", type=positive_text_scale, default=1.0)
     parser.add_argument(
         "--desktop-icons",
         choices=("tiny", "small", "standard", "large"),
-        default="large",
+        default="standard",
     )
-    parser.add_argument("--dock-icon-size", type=dock_size, default=57)
+    parser.add_argument("--dock-icon-size", type=dock_size, default=48)
     parser.add_argument("--unit-source")
     parser.add_argument("--config-dir", required=True)
     return parser

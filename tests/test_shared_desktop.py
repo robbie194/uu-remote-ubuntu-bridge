@@ -22,6 +22,25 @@ loader.exec_module(shared_desktop)
 
 
 class SharedDesktopTests(unittest.TestCase):
+    def test_cli_defaults_keep_native_ui_scale(self) -> None:
+        arguments = shared_desktop.build_parser().parse_args(
+            [
+                "check",
+                "--bus",
+                "unix:path=/run/user/1000/bus",
+                "--display",
+                "auto",
+                "--xauthority",
+                "auto",
+                "--config-dir",
+                "/tmp/uu-remote-bridge",
+            ]
+        )
+
+        self.assertEqual(1.0, arguments.text_scale)
+        self.assertEqual("standard", arguments.desktop_icons)
+        self.assertEqual(48, arguments.dock_icon_size)
+
     def test_recovery_unit_does_not_log_out_the_x11_session(self) -> None:
         unit = UNIT.read_text(encoding="utf-8")
 
@@ -78,6 +97,36 @@ class SharedDesktopTests(unittest.TestCase):
         self.assertEqual("'large'", desired["desktop_icons"]["after"])
         self.assertEqual("57", desired["dock_icon_size"]["after"])
         self.assertEqual("@as []", shared_desktop.render_string_array([]))
+
+    def test_native_text_scale_matches_gsettings_serialization(self) -> None:
+        arguments = argparse.Namespace(
+            text_scale=1.0,
+            desktop_icons="standard",
+            dock_icon_size=48,
+        )
+        values = {
+            ("org.gnome.mutter", "experimental-features"): "@as []",
+            ("org.gnome.desktop.interface", "text-scaling-factor"): "1.0",
+            ("org.gnome.shell.extensions.ding", "icon-size"): "'standard'",
+            (
+                "org.gnome.shell.extensions.dash-to-dock",
+                "dash-max-icon-size",
+            ): "48",
+        }
+        inventory = {
+            schema: {key}
+            for schema, key in shared_desktop.SETTING_SPECS.values()
+        }
+        with mock.patch.object(
+            shared_desktop, "gsettings_inventory", return_value=inventory
+        ), mock.patch.object(
+            shared_desktop,
+            "get_setting",
+            side_effect=lambda _environment, schema, key: values[(schema, key)],
+        ):
+            desired, _ = shared_desktop.desired_settings({}, arguments)
+
+        self.assertEqual("1.0", desired["text_scale"]["after"])
 
     def test_xrandr_parser_accepts_identity_and_rejects_fractional(self) -> None:
         identity = """DP-4 connected primary 2560x1440-2560+0

@@ -78,9 +78,9 @@ cursor_size="${UURB_CURSOR_SIZE:-${saved_cursor_size:-auto}}"
 console_vnc_port="${UURB_CONSOLE_VNC_PORT:-${saved_console_vnc_port:-5920}}"
 console_web_port="${UURB_CONSOLE_WEB_PORT:-${saved_console_web_port:-6080}}"
 x11_shared_desktop_guard="${UURB_X11_SHARED_DESKTOP_GUARD:-${saved_x11_shared_desktop_guard:-off}}"
-desktop_text_scale="${UURB_DESKTOP_TEXT_SCALE:-${saved_desktop_text_scale:-1.5}}"
-desktop_icon_size="${UURB_DESKTOP_ICON_SIZE:-${saved_desktop_icon_size:-large}}"
-dock_icon_size="${UURB_DOCK_ICON_SIZE:-${saved_dock_icon_size:-57}}"
+desktop_text_scale="${UURB_DESKTOP_TEXT_SCALE:-${saved_desktop_text_scale:-1.0}}"
+desktop_icon_size="${UURB_DESKTOP_ICON_SIZE:-${saved_desktop_icon_size:-standard}}"
+dock_icon_size="${UURB_DOCK_ICON_SIZE:-${saved_dock_icon_size:-48}}"
 uu_installer=''
 skip_packages=false
 skip_account_login=false
@@ -127,12 +127,12 @@ usage: ./install.sh [options]
                          capture geometry and install Shell crash recovery
                          (default: off)
   --desktop-text-scale N text-only GNOME scale used with the X11 guard
-                         (default: 1.5; valid: 0.5 through 3.0)
+                         (default: 1.0; valid: 0.5 through 3.0)
   --desktop-icon-size tiny|small|standard|large
                          DING desktop icon size used with the X11 guard
-                         (default: large, 96 px on Ubuntu 24.04)
+                         (default: standard)
   --dock-icon-size N     Ubuntu Dock icon size used with the X11 guard
-                         (default: 57; valid: 8 through 128)
+                         (default: 48; valid: 8 through 128)
   --skip-packages        do not install Ubuntu/Wine package dependencies
   --skip-account-login   do not open UU for first-time account sign-in
   --unattended           enable TPM-backed startup after an automatic login

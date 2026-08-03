@@ -77,6 +77,9 @@ locked by the release manifest.
 - record both observed GNOME Shell MIT-SHM `BadMatch`/`SIGTRAP` incidents, the
   Shell-first failure order, the native-geometry recovery, the controller-side
   scaling behavior, and the remaining non-zero recurrence risk
+- record the 2026-08-03 identity-geometry recurrence, narrow fractional
+  scaling from presumed trigger to risk factor, and make native UI sizing the
+  default instead of continuously relying on a separate 1.5x profile
 
 ### Fixed
 

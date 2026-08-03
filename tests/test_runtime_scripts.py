@@ -180,6 +180,9 @@ class RuntimeScriptTests(unittest.TestCase):
 
         self.assertIn("--x11-shared-desktop-guard on|off", installer)
         self.assertIn("UURB_X11_SHARED_DESKTOP_GUARD=%s", installer)
+        self.assertIn("saved_desktop_text_scale:-1.0", installer)
+        self.assertIn("saved_desktop_icon_size:-standard", installer)
+        self.assertIn("saved_dock_icon_size:-48", installer)
         self.assertIn("x11-xserver-utils", installer)
         self.assertIn('"$shared_desktop_helper" enable', installer)
         self.assertIn("--display auto", installer)

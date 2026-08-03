@@ -2,18 +2,20 @@
 
 ## Executive conclusion
 
-The apparent UU outage was downstream of a physical GNOME Shell crash. Two
-incidents, on 2026-07-31 and 2026-08-02, contained the same X11 MIT-SHM
-`BadMatch`/`SIGTRAP` signature. In the complete second timeline, Shell failed
-before GNOME Remote Desktop and FreeRDP lost their pipe, and UU disconnected
-only after its captured desktop disappeared.
+The apparent UU outage was downstream of a physical GNOME Shell crash. Three
+incidents, on 2026-07-31, 2026-08-02, and 2026-08-03, contained the same X11
+MIT-SHM `BadMatch`/`SIGTRAP` signature. Shell failed before GNOME Remote
+Desktop and FreeRDP lost their pipe, and UU disconnected only after its
+captured desktop disappeared.
 
-The strongest supported trigger is the interaction between continuous GNOME
-Remote Desktop capture and X11 fractional RandR transforms. The recovery keeps
-the shared physical desktop and relay at native identity geometry, then makes
-the UI readable through text and icon settings that do not resize the
-framebuffer. This removes the observed trigger combination; it is not a promise
-that every involved proprietary, desktop, or GPU component can never fail.
+The third incident was bracketed by a persisted identity configuration and an
+identity check immediately after restart; no log shows a geometry change in
+between, but there is no synchronous RandR snapshot at the fault. Continuous
+GNOME Remote Desktop capture on Mutter X11 remains inside the supported
+trigger boundary. Fractional geometry is an observed complicating factor, not
+a proven necessary cause. The recovery keeps native geometry and automatically
+restarts Shell without ending the physical login, but it contains rather than
+prevents this failure class.
 
 ## Before and after
 
@@ -25,7 +27,7 @@ that every involved proprietary, desktop, or GPU component can never fail.
 | Mutter feature | `x11-randr-fractional-scaling` enabled | disabled |
 | UU relay | `3424x1926` | `2560x1440` |
 | Windows controller | `1920x1080` | `1920x1080` |
-| UI sizing | approximately 150% display transform | text `1.5`, DING `large` (96), Dock `57` |
+| UI sizing | approximately 150% display transform | text `1.0`, DING `standard`, Dock default |
 
 The controller remains smaller than the host source. UU rejected the
 controller's host-resize request with `screen not support resolution` and
@@ -49,26 +51,38 @@ and fit it on the controller.
   `8544x2880` root, `3424x1926` primary, and non-identity transforms.
 - **2026-08-02 15:36:** cleanup restored the `5120x1440` native root, two
   `2560x1440` identity outputs, and monitor scale 1.
+- **2026-08-03 13:34:** the dconf database was last written before inspection.
+  The UI-only profile was later observed at text `1.0`, DING `standard`, and
+  Dock `38`; available logs do not identify the writer.
+- **2026-08-03 14:00:54:** Shell received the same MIT-SHM request 130, minor
+  opcode 4 `BadMatch` and exited with `status=5/TRAP`. The persisted profile
+  disabled fractional features, and the bridge revalidated both identity
+  transforms at 14:01:00 after the recovery unit restarted Shell at 14:00:58.
+  No event reports an intervening geometry change, but the journal is not a
+  fault-time RandR snapshot.
 
-The crash repeated after a Mutter/Shell package update. Updating packages was
-reasonable maintenance but was not, by itself, a complete fix.
+The crashes repeated after a Mutter/Shell package update and after restoring
+identity geometry. Updating packages and removing fractional transforms were
+reasonable mitigations but were not, by themselves, complete fixes.
 
 ## Root-cause boundary
 
 The following facts are confirmed by logs and live geometry:
 
 - GNOME Shell failed before the local RDP pipe and UU connection failed.
-- Both Shell failures used the MIT-SHM `BadMatch`/`SIGTRAP` signature.
-- The physical X11 session used fractional RandR transforms during the risky
-  profile.
+- All three Shell failures used the MIT-SHM `BadMatch`/`SIGTRAP` signature.
+- The physical X11 session used fractional RandR transforms during the first
+  investigated profile. The third matching crash was bracketed by identity
+  configuration, although no synchronous transform sample exists at the fault.
 - Removing those transforms restored a native, internally consistent capture
-  geometry.
+  geometry and avoids the previously observed transformed capture path.
 
-The exact Mutter source function and the exact race are not proven. The most
-defensible inference is that Shell and continuous GNOME Remote Desktop capture
-disagreed about an MIT-SHM image size while transformed X11 output geometry was
-active. It would overstate the evidence to attribute the crash to UU's network,
-one proprietary UU function, or a single known upstream Mutter bug.
+The exact Mutter source function and race are not proven. The strongest common
+boundary is Shell plus continuous GNOME Remote Desktop capture through the X11
+MIT-SHM path; the nearby `Not using GLX TFP` and stage-view allocation warnings
+are investigative leads, not proof. It would overstate the evidence to call
+fractional scaling the root cause or attribute the crash to UU's network, one
+proprietary UU function, or a single known upstream Mutter bug.
 
 ## Applied recovery
 
@@ -81,22 +95,22 @@ one proprietary UU function, or a single known upstream Mutter bug.
 5. Configure the X11 Shell user unit for delayed automatic restart and remove
    its stock `gnome-session-failed.target` linkage. This contains a future
    Shell process exit instead of deliberately ending the complete login.
-6. Apply UI-only compensation: text scale `1.5`, DING `large` (96 pixels), and
-   Dock maximum icon size `57`.
+6. Keep UI-only settings at the native baseline: text scale `1.0`, DING
+   `standard`, and the distribution Dock default.
 
 The declarative bridge profile is:
 
 ```bash
 ./install.sh --skip-packages --skip-account-login \
   --resolution 2560x1440 \
-  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
-  --desktop-icon-size large --dock-icon-size 57
+  --x11-shared-desktop-guard on --desktop-text-scale 1.0 \
+  --desktop-icon-size standard --dock-icon-size 48
 ```
 
 On this host, the operator-selected physical modes and relay remain
 `2560x1440`; the guard itself enforces only the no-fractional-feature and
 identity-transform invariants plus Shell recovery ownership. UI settings are
-applied independently so changing their values cannot silently change the
+applied independently, are not continuously enforced, and cannot change the
 capture rectangle.
 
 The implementation never rewrites `monitors.xml` or forces an output mode. It
@@ -116,9 +130,11 @@ elements even though that geometry was fragile.
 
 After recovery, GNOME renders a native `2560x1440` desktop at 100%, then UU fits
 that complete frame into the controller's `1920x1080` canvas. Unadjusted UI is
-therefore visibly smaller. Increasing text, desktop-icon, and Dock settings
-restores readability without creating a larger XRandR root, a transformed
-monitor, cropping, or white space.
+therefore visibly smaller. A `1.5`/`large`/`57` UI-only profile was tried, but
+the persistent dconf values later returned to `1.0`/`standard`/`38` through an
+unidentified writer. The guard intentionally does not continuously overwrite
+ordinary UI preferences, so the conservative profile now uses native UI
+sizing as well as native capture geometry.
 
 ## Validation
 
@@ -146,17 +162,18 @@ journalctl -b --no-pager | \
   rg 'gnome-shell|MIT-SHM|BadMatch|status=5/TRAP|Broken pipe'
 ```
 
-A bounded post-recovery observation contained no new `BadMatch`. That validates
-the immediate recovery state, not indefinite uptime.
+The 2026-08-03 recurrence proves that identity geometry does not guarantee
+indefinite uptime. Confirm the Shell-first failure order rather than assuming
+that a visible UU disconnect started in UU or the network.
 
 ## Residual risks and operator guardrails
 
 - Do not re-enable 125%, 150%, or 175% GNOME Display scaling on this shared X11
   desktop. It restores non-identity fractional transforms and invalidates the
   recovered geometry.
-- Change `--desktop-text-scale`, `--desktop-icon-size`, and
-  `--dock-icon-size` when readability needs adjustment; do not change monitor
-  scale for that purpose.
+- Keep the native UI defaults for the least stateful profile. Explicit
+  `--desktop-text-scale`, `--desktop-icon-size`, and `--dock-icon-size` values
+  remain available, but the runtime guard does not enforce them.
 - Shell automatic restart limits the outage and protects the login session. It
   does not make Shell immune to another crash.
 - A future Mutter, GNOME Remote Desktop, UU, Wine, or GPU failure can still
@@ -175,10 +192,10 @@ the immediate recovery state, not indefinite uptime.
 
 ## Rollback boundary
 
-For normal operation, change only the UI compensation while keeping the guard,
-100% Display scale, intended relay, and identity transforms. Restoring the old
-fractional monitor scale or `3424x1926` relay would restore the risky geometry
-and is not a supported operational rollback.
+For normal operation, keep the guard, 100% Display scale, intended relay, and
+identity transforms. Restoring the old fractional monitor scale or
+`3424x1926` relay would restore risky geometry and is not a supported
+operational rollback.
 
 `--x11-shared-desktop-guard off` and uninstall are reversible ownership
 operations: they conditionally restore each GSettings value and Shell unit only

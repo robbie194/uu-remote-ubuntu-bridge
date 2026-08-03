@@ -129,24 +129,23 @@ scaling changes the capture geometry and can reintroduce clipping or the GNOME
 Shell MIT-SHM crash documented below. Mode and relay size remain explicit
 operator choices; the guard does not select them.
 
-Use independent UI sizing when the native desktop is too small on a
-`1920x1080` controller. The validated host keeps its relay at `2560x1440` and
-uses this profile:
+The conservative baseline leaves GNOME's UI at its native size. The host keeps its
+relay at `2560x1440` and uses this profile:
 
 ```bash
 ./install.sh --skip-packages --skip-account-login \
   --resolution 2560x1440 \
-  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
-  --desktop-icon-size large --dock-icon-size 57
+  --x11-shared-desktop-guard on --desktop-text-scale 1.0 \
+  --desktop-icon-size standard --dock-icon-size 48
 ```
 
-Here `large` is GNOME Desktop Icons NG's 96-pixel preset. These settings make
-text, desktop icons, and Dock icons larger without resizing the framebuffer,
-so UU still receives the complete native desktop and scales it to the
-controller. Do not turn GNOME fractional display scaling back on to obtain the
-same visual size. See the
+Text, desktop-icon, and Dock sizing remain optional UI preferences rather than
+capture-safety invariants. The bridge applies them during installation but
+does not continuously overwrite later user or desktop-setting changes. Do not
+turn GNOME fractional display scaling back on to enlarge the UI. See the
 [2026-08-02 capture-crash record](docs/gnome-shell-capture-crash-20260802.md)
-for the evidence and remaining risk.
+for the updated evidence, including the 2026-08-03 identity-geometry
+recurrence and remaining risk.
 
 Enabling the guard does not rewrite `monitors.xml` or force new monitor modes.
 It refuses an already transformed desktop, removes only the two unsafe Mutter

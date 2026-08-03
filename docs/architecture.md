@@ -142,17 +142,21 @@ X11 fractional display scaling violates this invariant because Mutter
 publishes transformed logical outputs and a much larger root. During the
 2026-08-02 reproduction, selecting 150% produced an `8544x2880` root with
 non-identity `1.337494` and `2.0` transforms. Continuous GNOME Remote Desktop
-capture then shares geometry with Shell's MIT-SHM path. Two observed Shell
-crashes make that combination unsafe for this shared-desktop profile, although
-the available logs do not identify one exact Mutter source function.
+capture then shares geometry with Shell's MIT-SHM path. The transformed profile
+is unsafe for this shared-desktop design, but a third matching crash on
+2026-08-03 was bracketed by persisted identity configuration and a successful
+identity check immediately after restart. There is no synchronous fault-time
+RandR sample, so the evidence no longer supports treating fractional scaling
+as a necessary trigger or identifying one exact Mutter source function.
 
 Readability is therefore a separate layer. The shared-desktop guard removes the
 two fractional-scaling feature tokens and rejects non-identity live transforms;
 it does not select a monitor mode, root size, primary output, or relay size.
-The current host separately uses 100% Display scale, text scale `1.5`, DING
-`large` (96 pixels), Dock size `57`, and a `2560x1440` relay. The UI values do
+The current host separately uses 100% Display scale, text scale `1.0`, DING
+`standard`, Dock size `38`, and a `2560x1440` relay. New installations default
+to the schema defaults (`1.0`, `standard`, and Dock `48`). These UI values do
 not alter the RandR root, monitor transforms, relay size, or UU capture
-rectangle.
+rectangle, and the runtime geometry guard does not continuously enforce them.
 
 ### FreeRDP SSPI compatibility
 

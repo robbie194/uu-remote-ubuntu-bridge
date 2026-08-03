@@ -694,30 +694,33 @@ The recovery removed that boundary rather than hiding the disconnect:
 4. Run the X11 GNOME Shell unit with delayed automatic restart and without the
    stock GNOME session-failure target, limiting a future Shell failure instead
    of intentionally ending the physical login.
-5. Restore readability with UI-only settings: text scale `1.5`, DING `large`
-   (96 pixels), and Dock size `57`.
+5. Keep the independent UI settings at their native baseline: text scale
+   `1.0`, DING `standard`, and the distribution's Dock default.
 
 The Windows controller reports a `1920x1080` local canvas. Its request to make
 the host use that resolution returned `screen not support resolution` with
 `error_code:501`. The stable design therefore keeps the full `2560x1440`
 source and lets UU fit it to `1920x1080`. At 100% display scale this naturally
 makes unadjusted GNOME UI look smaller than the former 150% transformed
-desktop. Text, DING, and Dock compensation restores the useful apparent size
-without changing any capture dimensions.
+desktop. UI-only compensation can make it larger without changing capture
+dimensions, but it is an ordinary dconf preference and is not continuously
+enforced by the geometry guard.
 
 The explicit persistent profile is:
 
 ```bash
 ./install.sh --skip-packages --skip-account-login \
-  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
-  --desktop-icon-size large --dock-icon-size 57
+  --x11-shared-desktop-guard on --desktop-text-scale 1.0 \
+  --desktop-icon-size standard --dock-icon-size 48
 ```
 
 Post-recovery inspection confirmed identity transforms, the native dual-screen
-root, and a complete `2560x1440` relay frame. A bounded observation period did
-not show another `BadMatch`; it cannot prove that GNOME Shell, GNOME Remote
-Desktop, proprietary UU code, or the GPU can never fail. Re-enabling 125%,
-150%, or 175% X11 fractional display scaling would restore the observed risky
-geometry and invalidates this recovery profile. A separate NVIDIA GSP/Xid
-hard-lock, if observed, must be investigated as a host/GPU failure rather than
-being attributed to this MIT-SHM incident.
+root, and a complete `2560x1440` relay frame. On 2026-08-03, however, the same
+MIT-SHM `BadMatch` recurred between a persisted identity configuration and an
+identity check immediately after restart. No synchronous RandR sample exists
+at the fault, so fractional scaling is no longer supported as a necessary
+trigger; the unit override contains a future Shell exit but does not prevent one.
+Re-enabling 125%, 150%, or 175% X11 fractional display scaling still restores
+known-risky geometry. A separate NVIDIA GSP/Xid hard-lock, if observed, must
+be investigated as a host/GPU failure rather than being attributed to this
+MIT-SHM incident.

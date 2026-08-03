@@ -55,20 +55,20 @@ that GNOME Shell and GNOME Remote Desktop share. The old transformed desktop
 looked larger because GNOME rendered it at roughly 150%; that apparent size
 was not a controller-side UU setting.
 
-Keep Display at 100% and enlarge only the UI layers that do not change capture
-geometry. The current `2560x1440` host profile is:
+Keep Display at 100%. The conservative `2560x1440` host profile also keeps
+the independent UI settings at their native defaults:
 
 ```bash
 ./install.sh --skip-packages --skip-account-login \
   --resolution 2560x1440 \
-  --x11-shared-desktop-guard on --desktop-text-scale 1.5 \
-  --desktop-icon-size large --dock-icon-size 57
+  --x11-shared-desktop-guard on --desktop-text-scale 1.0 \
+  --desktop-icon-size standard --dock-icon-size 48
 ```
 
-`large` is DING's 96-pixel desktop-icon preset. Text scale `1.5` and Dock size
-`57` are deliberate visual compensation for a Windows controller whose local
-canvas is `1920x1080`. They do not change the physical `2560x1440` source or
-crop its right and bottom edges.
+The three UI values do not change the physical `2560x1440` source. They are
+applied at install time but are not runtime guard invariants, so later GNOME
+Settings or dconf changes can replace them. Use explicit non-default values
+only when that behavior is acceptable.
 
 Confirm that the geometry remains native after changing UI sizes:
 
